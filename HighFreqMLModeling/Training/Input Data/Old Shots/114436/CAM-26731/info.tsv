@@ -1,0 +1,6 @@
+start	2022	7	1	11	40	1
+stop	2022	7	1	11	44	4
+time_range	4456.566709	4704.620326
+time_delta_range	0.000004	248.043625
+time_delta_average	0.099261
+fps	10.078466
