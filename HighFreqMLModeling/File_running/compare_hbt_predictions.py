@@ -8,18 +8,16 @@ RESERVED_SHOT = 119671  # Fixed reserved shot (valid for states 1 and 3, will ch
 SELECTED_DATA_TYPE = 'ma2'
 STATES = [1, 2, 3]
 NOTEBOOKS = {
-    'trimmed': 'trimmed_HBT_analysis.ipynb',
-    'untrimmed': 'untrimmed_HBT_analysis.ipynb'
+    'trimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/trimmed_HBT_analysis.ipynb',
+    'untrimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/untrimmed_HBT_analysis.ipynb'
 }
 OUTPUT_DIR = 'output_notebooks'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Dictionary to store results
 results = {
-    NOTEBOOKS = {
-    'trimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/trimmed_HBT_analysis.ipynb',
-    'untrimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/untrimmed_HBT_analysis.ipynb'
-}
+    'trimmed': {state: {'true': None, 'pred': None} for state in STATES},
+    'untrimmed': {state: {'true': None, 'pred': None} for state in STATES}
 }
 
 # Execute notebooks for each configuration
