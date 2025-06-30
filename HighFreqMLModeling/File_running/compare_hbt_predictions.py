@@ -16,8 +16,10 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Dictionary to store results
 results = {
-    'trimmed': {state: {'true': None, 'pred': None} for state in STATES},
-    'untrimmed': {state: {'true': None, 'pred': None} for state in STATES}
+    NOTEBOOKS = {
+    'trimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/trimmed_HBT_analysis.ipynb',
+    'untrimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/untrimmed_HBT_analysis.ipynb'
+}
 }
 
 # Execute notebooks for each configuration
