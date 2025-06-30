@@ -22,7 +22,7 @@ import re
 
 
 # Define shot lists and file paths
-state = 2  # state 1 -> javier, state 2 -> william, state 3 -> combined
+state = 1  # state 1 -> javier, state 2 -> william, state 3 -> combined
 if state == 1:
     shot_list = [119591, 119599, 119601, 119646, 119648, 119653, 119654, 119658, 119659,
              119661, 119662, 119663, 119665, 119666, 119667, 119669, 119670, 119671,
@@ -54,10 +54,11 @@ elif state == 3:
             return ('/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/Training/Input Data/Old Shots/',
                    '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/Training/oldshot_python_hbteplib_data/')
 
+selected_data_type = 'ma4'  # Options: 'ma1', 'ma2', 'ma3', 'ma4', 'mp1', 'mp2', 'mp3', 'mp4'
 
 TARGET_FRAME_COUNT = 800
 CAMERA_DEPTH = 65535.0 # 2^16
-RESERVED_SHOT = 114412  # Set to a specific shot number or None for random selection
+RESERVED_SHOT = 119671  # Set to a specific shot number or None for random selection
 
 
 # In[4]:
@@ -160,7 +161,7 @@ def process_all_shots(shot_list, base_path, max_pixel_value, target_frame_count,
             np.array(flat_training_data), valid_shots)
 
 
-# In[14]:
+# In[5]:
 
 
 # Load and format HBT data
@@ -224,6 +225,21 @@ original_length = hbt_time_data.shape[1]
 frame_ratio = original_length // TARGET_FRAME_COUNT
 hbt_time_data = hbt_time_data[:,::frame_ratio]
 hbt_time_data = hbt_time_data[:,:TARGET_FRAME_COUNT]
+
+# Assign hbt_dataType based on selected_data_type
+data_type_mapping = {
+    'ma1': hbt_ma1_data,
+    'ma2': hbt_ma2_data,
+    'ma3': hbt_ma3_data,
+    'ma4': hbt_ma4_data,
+    'mp1': hbt_mp1_data,
+    'mp2': hbt_mp2_data,
+    'mp3': hbt_mp3_data,
+    'mp4': hbt_mp4_data
+}
+if selected_data_type not in data_type_mapping:
+    raise ValueError(f"Invalid selected_data_type: {selected_data_type}. Choose from {list(data_type_mapping.keys())}")
+hbt_dataType = data_type_mapping[selected_data_type]
 
 print("HBT data shapes:")
 print(f"Mode amplitude 1: {hbt_ma1_data.shape}")
@@ -289,11 +305,11 @@ if RESERVED_SHOT is None:
     reserved_shot_flat = flat_data
 
 
-# In[16]:
+# In[6]:
 
 
 # Prepare data for HBT prediction model
-target_data = hbt_ma2_data  # Using mode 2 amplitude as target
+target_data = hbt_dataType  # Using mode 2 amplitude as target
 training_data = cut_training_data_2D
 
 # Normalization factors
@@ -355,7 +371,7 @@ plt.figure(figsize=(10, 6))
 plt.plot(testing_labels, label='Normalized Mode Amplitude')
 plt.xlabel('Sample Number')
 plt.ylabel('Normalized Mode Amplitude')
-plt.title('Testing Labels (Outliers Clipped)')
+plt.title(f'Testing Labels for {selected_data_type} (Outliers Clipped)')
 plt.grid(True)
 plt.legend()
 plt.show()
@@ -365,19 +381,19 @@ plt.figure(figsize=(10, 6))
 plt.plot(target_vector, label='Normalized Mode Amplitude')
 plt.xlabel('Sample Number')
 plt.ylabel('Normalized Mode Amplitude')
-plt.title('Training Labels (Outliers Clipped)')
+plt.title(f'Training Labels for {selected_data_type} (Outliers Clipped)')
 plt.grid(True)
 plt.legend()
 plt.show()
 
 
-# In[18]:
+# In[7]:
 
 
-get_ipython().run_cell_magic('script', 'true # This command stops it from running when pressing run all.', "# DON'T RUN!! Single Shot. Prepare data for HBT prediction model\ntarget_data = hbt_ma2_data  # Using mode 2 amplitude as target\ntraining_data = cut_training_data_2D\n\n# Normalization factors\ncamera_norm = 1  # Camera data already normalized by max_pixel_value\nma_norm = 1  # Mode amplitude normalization factor\n\n# Reshape the training data and labels\ntarget_vector = []\ntraining_vector = []\nshot = shot_list[-1]  # Select only the last shot\nshot_idx = shot_list.index(shot)\nfor j in range(len(target_data[shot_idx])):  # Use frame count for the last shot\n    target_vector.append(target_data[shot_idx][j])\n    training_vector.append(training_data[-1][j])\n\n# Shuffle the data\nrandom.seed(123)\nzip_list = list(zip(target_vector, training_vector))\n#random.shuffle(zip_list)\ntarget_vector, training_vector = zip(*zip_list)\n\n# Convert to numpy arrays and normalize\ntarget_vector = np.asarray(target_vector, dtype=np.float32) / ma_norm\ntraining_vector = np.asarray(training_vector, dtype=np.float32)\n\n# Split into training and testing sets\ntesting_inputs = training_vector[-201:-1]\ntesting_labels = target_vector[-201:-1]\ntraining_vector = training_vector[0:-200]\ntarget_vector = target_vector[0:-200]\n\nprint('Training shape: ', training_vector.shape, 'Target shape: ', target_vector.shape)\nprint('Testing shape: ', testing_inputs.shape, 'Testing label shape: ', testing_labels.shape)\n\n# Plot testing labels for the last shot\nplt.plot(testing_labels)\nplt.xlabel('Sample Number')\nplt.ylabel('Normalized Mode Amplitude')\nplt.title(f'Testing Labels for Shot {shot}')\nplt.grid(True)\nplt.show()\n")
+get_ipython().run_cell_magic('script', 'true # This command stops it from running when pressing run all.', "# DON'T RUN!! Single Shot. Prepare data for HBT prediction model\ntarget_data = hbt_dataType  # Using mode 2 amplitude as target\ntraining_data = cut_training_data_2D\n\n# Normalization factors\ncamera_norm = 1  # Camera data already normalized by max_pixel_value\nma_norm = 1  # Mode amplitude normalization factor\n\n# Reshape the training data and labels\ntarget_vector = []\ntraining_vector = []\nshot = shot_list[-1]  # Select only the last shot\nshot_idx = shot_list.index(shot)\nfor j in range(len(target_data[shot_idx])):  # Use frame count for the last shot\n    target_vector.append(target_data[shot_idx][j])\n    training_vector.append(training_data[-1][j])\n\n# Shuffle the data\nrandom.seed(123)\nzip_list = list(zip(target_vector, training_vector))\n#random.shuffle(zip_list)\ntarget_vector, training_vector = zip(*zip_list)\n\n# Convert to numpy arrays and normalize\ntarget_vector = np.asarray(target_vector, dtype=np.float32) / ma_norm\ntraining_vector = np.asarray(training_vector, dtype=np.float32)\n\n# Split into training and testing sets\ntesting_inputs = training_vector[-201:-1]\ntesting_labels = target_vector[-201:-1]\ntraining_vector = training_vector[0:-200]\ntarget_vector = target_vector[0:-200]\n\nprint('Training shape: ', training_vector.shape, 'Target shape: ', target_vector.shape)\nprint('Testing shape: ', testing_inputs.shape, 'Testing label shape: ', testing_labels.shape)\n\n# Plot testing labels for the last shot\nplt.plot(testing_labels)\nplt.xlabel('Sample Number')\nplt.ylabel('Normalized Mode Amplitude')\nplt.title(f'Testing Labels for Shot {shot}')\nplt.grid(True)\nplt.show()\n")
 
 
-# In[20]:
+# In[8]:
 
 
 # Define model architecture
@@ -420,20 +436,20 @@ william_model.compile(optimizer=optimizer_func, loss=loss_func)
 william_model.summary()
 
 
-# In[22]:
+# In[9]:
 
 
 # Train the model
 early_stop = keras.callbacks.EarlyStopping(monitor='val_loss', patience=20)
 Model = william_model
 history = Model.fit(training_vector, target_vector,
-                       epochs=15,
+                       epochs=20,
                        validation_split=0.2,
                        verbose=1,
                        callbacks=[early_stop])
 
 
-# In[24]:
+# In[10]:
 
 
 # Evaluate the model on test data
@@ -451,7 +467,7 @@ axes[0].plot(range(1, len(history.history['val_loss']) + 1),
              label='Validation Loss')
 axes[0].set_xlabel('Epoch')
 axes[0].set_ylabel('Loss')
-axes[0].set_title('HBT Model Validation Loss')
+axes[0].set_title(f'HBT Model Validation Loss for {selected_data_type}')
 axes[0].legend()
 axes[0].grid(True)
 
@@ -467,29 +483,28 @@ axes[2].plot(prediction_errors, '.')
 axes[2].set_xlabel('Test Sample Number')
 axes[2].set_ylabel('% Error')
 axes[2].set_title('Normalized Testing Error')
-
 plt.tight_layout()
 plt.show()
 
 # Plot 4: Actual vs Predicted Values
 plt.figure(figsize=(10, 6))
-plt.plot(testing_labels, '.', label='Actual Mode Amplitude')
-plt.plot(predictions[:, 0], '.', label='Predicted Mode Amplitude')
+plt.plot(testing_labels, '.', label=f'Actual {selected_data_type}')
+plt.plot(predictions[:, 0], '.', label=f'Predicted {selected_data_type}')
 plt.plot(-(testing_labels - predictions[:, 0]), '*', label='Difference')
 plt.xlabel('Sample Number')
 plt.ylabel('Normalized Mode Amplitude')
-plt.title('HBT Mode Amplitude Prediction Results')
+plt.title(f'HBT {selected_data_type} Prediction Results')
 plt.legend()
 plt.grid(True)
 plt.show()
 
 # Plot original scale predictions
 plt.figure(figsize=(10, 6))
-plt.plot(testing_labels * ma_norm, '.', label='Actual Mode Amplitude')
-plt.plot(predictions[:, 0] * ma_norm, '.', label='Predicted Mode Amplitude')
+plt.plot(testing_labels * ma_norm, '.', label=f'Actual {selected_data_type}')
+plt.plot(predictions[:, 0] * ma_norm, '.', label=f'Predicted {selected_data_type}')
 plt.xlabel('Sample Number')
-plt.ylabel('Mode Amplitude (Original Scale)')
-plt.title('HBT Mode Amplitude Prediction Results')
+plt.ylabel(f'{selected_data_type} (Original Scale)')
+plt.title(f'HBT {selected_data_type} Prediction Results')
 plt.legend()
 plt.grid(True)
 plt.show()
@@ -499,17 +514,17 @@ print(f"Maximum predicted mode amplitude (normalized): {np.max(np.abs(prediction
 print(f"Mean absolute percentage error: {np.mean(prediction_errors):.2f}%")
 
 
-# In[26]:
+# In[11]:
 
 
 # YOU MUST change name before saving!!!
 #Model.save_weights('Potential Models/model_agb001.weights.h5')
 
 
-# In[28]:
+# In[12]:
 
 
-def plot_RESERVED_SHOT_predictions(shot, shot_list, cut_training_data_2d, reserved_shot_cut_2d, hbt_ma2_data, model, ma_norm):
+def plot_RESERVED_SHOT_predictions(shot, shot_list, cut_training_data_2d, reserved_shot_cut_2d, hbt_dataType, model, ma_norm):
     """Plot actual vs predicted Mode 2 amplitude for the reserved shot."""
     if reserved_shot_cut_2d is None:
         print(f"No data available for reserved shot {shot}. No plot generated.")
@@ -517,7 +532,9 @@ def plot_RESERVED_SHOT_predictions(shot, shot_list, cut_training_data_2d, reserv
     
     shot_idx = shot_list.index(shot)
     camera_data = reserved_shot_cut_2d
-    hbt_data = hbt_ma2_data[shot_idx][:, 0]
+    hbt_data = hbt_dataType[shot_idx][:, 0]
+
+    print(f"Shot {shot}: Camera frames={len(camera_data)}, HBT frames={len(hbt_data)}")
     
     if len(camera_data) == 0:
         print(f"No camera data for shot {shot}. No plot generated.")
@@ -529,11 +546,11 @@ def plot_RESERVED_SHOT_predictions(shot, shot_list, cut_training_data_2d, reserv
     
     # Plot actual vs predicted
     plt.figure(figsize=(10, 6))
-    plt.plot(hbt_data, label='Actual Mode 2 Amplitude')
-    plt.plot(predictions, '--', label='Predicted Mode 2 Amplitude')
+    plt.plot(hbt_data, label=f'Actual {selected_data_type}')
+    plt.plot(predictions, '--', label=f'Predicted {selected_data_type}')
     plt.xlabel('Frame Index')
-    plt.ylabel('Mode Amplitude (Original Scale)')
-    plt.title(f'Shot {shot}: Actual vs Predicted Mode 2 Amplitude')
+    plt.ylabel(f'{selected_data_type} (Original Scale)')
+    plt.title(f'Shot {shot}: Actual vs Predicted {selected_data_type}')
     plt.legend()
     plt.grid(True)
     plt.show()
@@ -546,12 +563,14 @@ def plot_RESERVED_SHOT_predictions(shot, shot_list, cut_training_data_2d, reserv
 
 # Plot predictions for the reserved shot
 plot_RESERVED_SHOT_predictions(
-    RESERVED_SHOT, shot_list, cut_training_data_2D, reserved_shot_cut_2d, hbt_ma2_data, william_model, ma_norm
+    RESERVED_SHOT, shot_list, cut_training_data_2D, reserved_shot_cut_2d, hbt_dataType, william_model, ma_norm
 )
 
 
 # In[ ]:
 
 
-
+# Save true ma2 data and predictions for reserved shot
+np.save(f'results_{state}_{selected_data_type}_true.npy', hbt_data)
+np.save(f'results_{state}_{selected_data_type}_pred.npy', predictions)
 
