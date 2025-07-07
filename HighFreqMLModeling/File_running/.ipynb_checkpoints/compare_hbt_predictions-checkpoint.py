@@ -20,8 +20,8 @@ RESERVED_SHOTS = {
         3: 119671   # Shot for state 3 in mode1
     },
     'mode2': {
-        2: 114412,  # Shot for state 2 in mode2
-        3: 114412   # Shot for state 3 in mode2
+        2: 114458,  # Shot for state 2 in mode2
+        3: 114458   # Shot for state 3 in mode2
     }
 }
 SELECTED_DATA_TYPE = 'ma2'
