@@ -13,6 +13,7 @@ args = parser.parse_args()
 # Configuration
 STATES_MODE1 = [1, 3]  # States for mode1
 STATES_MODE2 = [2, 3]  # States for mode2
+EPOCHS = 20
 RESERVED_SHOTS = {
     'mode1': {
         1: 119671,  # Shot for state 1 in mode1
@@ -55,7 +56,7 @@ for notebook_type in NOTEBOOKS:
             'state': state,
             'selected_data_type': SELECTED_DATA_TYPE,
             'RESERVED_SHOT': shots[state],
-            'EPOCH_NUM': 20
+            'EPOCH_NUM': EPOCHS
         }
         
         # Execute the notebook
