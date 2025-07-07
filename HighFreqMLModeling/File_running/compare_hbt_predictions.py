@@ -115,20 +115,31 @@ labels = {
 # Plot true and predicted data for each state
 for state in STATES:
     if true_data[state] is None:
-        print(f"Warning: No true data found for state {state} with reserved shot {shots[state]}. Skipping plot for this state.")
+        print(f"Warning: No true data found for state {state} with reserved shot {shots[state]}...")
         continue
-    plt.plot(true_data[state], 'k-', label=f'True ma2 (State {state}, Shot {shots[state]})', linewidth=2, alpha=0.5)
+    if state == 1:  # Plot true data only for State 1
+        true_data_state1 = true_data[state]
+        plt.plot(true_data_state1, 'k-', label=f'True ma2 (State 1, Shot {shots[state]})')
+        true_min = np.min(true_data_state1)
+        true_max = np.max(true_data_state1)
+        true_range = true_max - true_min
     for notebook_type in results:
         if results[notebook_type][state]['pred'] is not None:
-            key = f"{notebook_type}_{state}"
-            plt.plot(results[notebook_type][state]['pred'], '--', color=colors[key], label=labels[key])
-
-plt.xlabel('Frame Index')
-plt.ylabel('ma2 (Original Scale)')
-plt.title(f'Actual vs Predicted ma2 for Reserved Shots {shots} (Mode: {args.mode})')
+            pred_data = results[notebook_type][state]['pred']
+            # Normalize predicted data to the range of true data for State 1
+            normalized_pred = true_min + (pred_data - np.min(pred_data)) * (true_range) / (np.max(pred_data) - np.min(pred_data))
+            if state == 1 and notebook_type == 'trimmed':
+                plt.plot(normalized_pred, 'b--', label=f'Trimmed State 1')
+            elif state == 1 and notebook_type == 'untrimmed':
+                plt.plot(normalized_pred, 'c--', label=f'Untrimmed State 1')
+            elif state == 3 and notebook_type == 'trimmed':
+                plt.plot(normalized_pred, 'r--', label=f'Trimmed State 3')
+            elif state == 3 and notebook_type == 'untrimmed':
+                plt.plot(normalized_pred, 'y--', label=f'Untrimmed State 3')
 plt.legend()
-plt.grid(True)
-plt.tight_layout()
+plt.title(f'Actual vs Predicted ma2 for Reserved Shots (1: 119671, 3: 119671) (Mode: mode1)')
+plt.xlabel('Frame Index')
+plt.ylabel('Original Scale')
 plt.show()
 
 # Print summary metrics
