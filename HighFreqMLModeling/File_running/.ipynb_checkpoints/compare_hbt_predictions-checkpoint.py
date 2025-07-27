@@ -30,6 +30,7 @@ NOTEBOOKS = {
     'untrimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/untrimmed_HBT_analysis.ipynb'
 }
 OUTPUT_DIR = 'output_notebooks'
+FIGURE_FILENAME = f"hbt_prediction_comparison_{args.mode}.png"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Select states and shots based on mode
@@ -39,8 +40,8 @@ print(f"Running in {args.mode} with states {STATES} and shots {shots}")
 
 # Dictionary to store results
 results = {
-    'trimmed': {state: {'true': None, 'pred': None} for state in STATES},
-    'untrimmed': {state: {'true': None, 'pred': None} for state in STATES}
+    'trimmed': {state: {'true': None, 'pred': None, 'time': None} for state in STATES},
+    'untrimmed': {state: {'true': None, 'pred': None, 'time': None} for state in STATES}
 }
 
 # Execute notebooks for each configuration
@@ -50,6 +51,7 @@ for notebook_type in NOTEBOOKS:
         output_notebook = os.path.join(OUTPUT_DIR, f'{notebook_type}_state_{state}_output.ipynb')
         output_true = f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_true.npy'
         output_pred = f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_pred.npy'
+        output_time = f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_time.npy'
         
         # Parameters to pass to the notebook
         parameters = {
@@ -74,11 +76,15 @@ for notebook_type in NOTEBOOKS:
         
         # Load results
         try:
-            true_data = np.load(output_true)
-            pred_data = np.load(output_pred)
-            print(f"Loaded true data shape for {notebook_type} state {state}: {true_data.shape}")
-            results[notebook_type][state]['true'] = true_data
-            results[notebook_type][state]['pred'] = pred_data
+            if os.path.exists(output_true):
+                results[notebook_type][state]['true'] = np.load(output_true)
+                print(f"Loaded true data shape for {notebook_type} state {state}: {results[notebook_type][state]['true'].shape}")
+            if os.path.exists(output_pred):
+                results[notebook_type][state]['pred'] = np.load(output_pred)
+                print(f"Loaded pred data shape for {notebook_type} state {state}: {results[notebook_type][state]['pred'].shape}")
+            if os.path.exists(output_time):
+                results[notebook_type][state]['time'] = np.load(output_time)
+                print(f"Loaded time data shape for {notebook_type} state {state}: {results[notebook_type][state]['time'].shape}")
             print(f"Loaded results for {notebook_type} state {state}")
         except FileNotFoundError:
             print(f"Result files not found for {notebook_type} state {state}...")
@@ -96,56 +102,91 @@ for state in STATES:
 
 # Generate comparison plot
 plt.figure(figsize=(12, 8))
-colors = {
-    'trimmed_1': 'b',
-    'trimmed_2': 'g',
-    'trimmed_3': 'r',
-    'untrimmed_1': 'c',
-    'untrimmed_2': 'm',
-    'untrimmed_3': 'y'
-}
-labels = {
-    'trimmed_1': 'Trimmed State 1',
-    'trimmed_2': 'Trimmed State 2',
-    'trimmed_3': 'Trimmed State 3',
-    'untrimmed_1': 'Untrimmed State 1',
-    'untrimmed_2': 'Untrimmed State 2',
-    'untrimmed_3': 'Untrimmed State 3'
+
+# Color table for plotting
+color_table = {
+    ('trimmed', 1): 'blue',
+    ('untrimmed', 1): 'cyan',
+    ('trimmed', 2): 'green',
+    ('untrimmed', 2): 'lime',
+    ('trimmed', 3): 'red',
+    ('untrimmed', 3): 'orange',
 }
 
-# Plot true and predicted data for each state
+# ---------- 1. Plot only one instance of unnormalized true data ----------
+true_plotted = False
 for state in STATES:
-    if true_data[state] is None:
-        print(f"Warning: No true data found for state {state} with reserved shot {shots[state]}...")
-        continue
-    if state == 1:  # Plot true data only for State 1
-        true_data_state1 = true_data[state]
-        plt.plot(true_data_state1, 'k-', label=f'True ma2 (State 1, Shot {shots[state]})')
-        true_min = np.min(true_data_state1)
-        true_max = np.max(true_data_state1)
-        true_range = true_max - true_min
-    for notebook_type in results:
-        if results[notebook_type][state]['pred'] is not None:
-            pred_data = results[notebook_type][state]['pred']
-            # Normalize predicted data to the range of true data for State 1
-            normalized_pred = true_min + (pred_data - np.min(pred_data)) * (true_range) / (np.max(pred_data) - np.min(pred_data))
-            if state == 1 and notebook_type == 'trimmed':
-                plt.plot(normalized_pred, 'b--', label=f'Trimmed State 1')
-            elif state == 1 and notebook_type == 'untrimmed':
-                plt.plot(normalized_pred, 'c--', label=f'Untrimmed State 1')
-            elif state == 3 and notebook_type == 'trimmed':
-                plt.plot(normalized_pred, 'r--', label=f'Trimmed State 3')
-            elif state == 3 and notebook_type == 'untrimmed':
-                plt.plot(normalized_pred, 'y--', label=f'Untrimmed State 3')
+    if results['untrimmed'][state]['true'] is not None:
+        true = results['untrimmed'][state]['true']
+        downsampled_time = results['untrimmed'][state]['time']
+        
+        if downsampled_time is None or len(downsampled_time) != len(true):
+            print(f"⚠️ Missing or mismatched time for true data (state {state}); using indices")
+            downsampled_time = np.arange(len(true))
+        plt.plot(downsampled_time, true, '-', color='black', label=f'True ma2 (State {state}, Shot {shots[state]})')
+
+        # Store scale for prediction normalization
+        y_min, y_max = np.min(true), np.max(true)
+        print(f"True signal (state {state}) - min: {y_min:.4f}, max: {y_max:.4f}")
+        y_range = y_max - y_min if y_max != y_min else 1.0
+        print(f"True signal range: {y_range:.4f}")
+        true_plotted = True
+        break
+
+if not true_plotted:
+    print("⚠️ No untrimmed true data found. Skipping true signal plot.")
+    y_min, y_range = 0.0, 1.0  # Fallback values
+
+# ---------- 2. Plot predictions (adjusted for no normalization) ----------
+for notebook_type in results:
+    for state in STATES:
+        pred = results[notebook_type][state]['pred']
+        pred_time = results[notebook_type][state]['time']
+
+        if pred is None:
+            continue
+
+        # Debugging: Print prediction range
+        print(f"{notebook_type} State {state} - Pred min: {np.min(pred):.4f}, max: {np.max(pred):.4f}")
+
+        if notebook_type == 'untrimmed':
+            # Untrimmed predictions are close to true signal scale, plot as-is
+            pred_denorm = pred
+        else:
+            # Trimmed predictions: Scale using true signal's range or recompute ma_norm
+            true = results[notebook_type][state]['true']
+            if true is not None and len(true) > 0:
+                # Compute ma_norm as the ratio of true signal's range to pred's range
+                true_range = np.max(true) - np.min(true) if np.max(true) != np.min(true) else 1.0
+                pred_range = np.max(pred) - np.min(pred) if np.max(pred) != np.min(pred) else 1.0
+                ma_norm = true_range / pred_range
+                pred_denorm = pred * ma_norm
+                print(f"Computed ma_norm={ma_norm:.4f} for {notebook_type} state {state}")
+            else:
+                # Fallback: Use true signal's range from untrimmed true data
+                pred_denorm = pred * y_range if true_plotted else pred
+                print(f"⚠️ No true data for {notebook_type} state {state}, using {'true range' if true_plotted else 'raw prediction'}")
+
+        color = color_table.get((notebook_type, state), 'gray')
+        label = f"Pred State {state} ({notebook_type}, Shot {shots[state]})"
+
+        plt.plot(pred_time, pred_denorm, '--', color=color, label=label)
+
+# ---------- 3. Final touches ----------
+plt.title(f'HBT {SELECTED_DATA_TYPE}: Predictions vs True (Mode: {args.mode}, Shots: {shots})')
+plt.xlabel('Time (s)')
+plt.ylabel('Amplitude')
+plt.grid(True)
 plt.legend()
-plt.title(f'Actual vs Predicted ma2 for Reserved Shots (1: 119671, 3: 119671) (Mode: mode1)')
-plt.xlabel('Frame Index')
-plt.ylabel('Original Scale')
+plt.tight_layout()
+plt.savefig(FIGURE_FILENAME)
 plt.show()
+
+print(f"\n✅ Figure saved as '{FIGURE_FILENAME}'")
 
 # Print summary metrics
 for notebook_type in results:
     for state in results[notebook_type]:
         if results[notebook_type][state]['true'] is not None and results[notebook_type][state]['pred'] is not None:
-            errors = np.abs(results[notebook_type][state]['true'] - results[notebook_type][state]['pred']) / np.max(np.abs(results[notebook_type][state]['true'])) * 100
-            print(f"{notebook_type} State {state} (Shot {shots[state]}) - Mean absolute percentage error: {np.mean(errors):.2f}%")
+            errors = np.abs(results[notebook_type][state]['true'] - results[notebook_type][state]['pred']) / (np.max(np.abs(results[notebook_type][state]['true'])) + 1e-8) * 100
+            print(f"{notebook_type.capitalize()} State {state} (Shot {shots[state]}) - MAPE: {np.mean(errors):.2f}%")
