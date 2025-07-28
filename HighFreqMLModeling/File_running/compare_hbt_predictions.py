@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import os
 import argparse
 
+#currently only doing mode amplitude 2.
+
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run HBT predictions for different state configurations.")
 parser.add_argument('--mode', choices=['mode1', 'mode2'], default='mode1',
@@ -115,9 +117,11 @@ color_table = {
 
 # ---------- 1. Plot only one instance of unnormalized true data ----------
 true_plotted = False
+original_true = None
 for state in STATES:
     if results['untrimmed'][state]['true'] is not None:
         true = results['untrimmed'][state]['true']
+        original_true = true
         downsampled_time = results['untrimmed'][state]['time']
         
         if downsampled_time is None or len(downsampled_time) != len(true):
@@ -153,22 +157,28 @@ for notebook_type in results:
             # Untrimmed predictions are close to true signal scale, plot as-is
             pred_denorm = pred
         else:
-            # Trimmed predictions: Scale using true signal's range or recompute ma_norm
-            true = results[notebook_type][state]['true']
-            if true is not None and len(true) > 0:
-                # Compute ma_norm as the ratio of true signal's range to pred's range
-                true_range = np.max(true) - np.min(true) if np.max(true) != np.min(true) else 1.0
+            # Trimmed predictions: Scale using original_true signal's range or recompute ma_norm
+            if original_true is not None and len(original_true) > 0:
+                # Compute true_range using the 95th percentile for the max
+                true_min = np.min(original_true)
+                true_max = np.percentile(original_true, 95)  # Use 95th percentile instead of max
+                true_range = true_max - true_min if true_max != true_min else 3.0
                 pred_range = np.max(pred) - np.min(pred) if np.max(pred) != np.min(pred) else 1.0
+                print(true_range)
                 ma_norm = true_range / pred_range
                 pred_denorm = pred * ma_norm
+                # Shift pred_denorm to have a floor at 0
+                pred_denorm = pred_denorm - np.min(pred_denorm)
                 print(f"Computed ma_norm={ma_norm:.4f} for {notebook_type} state {state}")
             else:
                 # Fallback: Use true signal's range from untrimmed true data
                 pred_denorm = pred * y_range if true_plotted else pred
+                # Shift pred_denorm to have a floor at 0
+                pred_denorm = pred_denorm - np.min(pred_denorm)
                 print(f"⚠️ No true data for {notebook_type} state {state}, using {'true range' if true_plotted else 'raw prediction'}")
 
         color = color_table.get((notebook_type, state), 'gray')
-        label = f"Pred State {state} ({notebook_type}, Shot {shots[state]})"
+        label = f"Pred State {state} ({notebook_type})"
 
         plt.plot(pred_time, pred_denorm, '--', color=color, label=label)
 
