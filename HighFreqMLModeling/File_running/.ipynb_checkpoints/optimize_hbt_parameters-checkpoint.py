@@ -1,201 +1,252 @@
+import os
+import time
+import uuid
+import copy
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import os
-import subprocess
-from scipy.stats import chisquare
-import uuid
-import argparse
-import copy
+import papermill as pm
+from jupyter_client.kernelspec import find_kernel_specs
 
 # Configuration
-POPULATION_SIZE = 50  # Reduced for testing; increase to 100+ for full runs
-GENERATIONS = 10
-TOP_PERCENT = 0.1  # Top 10% for selection
-MUTATION_RATE = 0.1  # 10% chance of mutation
+POPULATION_SIZE = 2  # Reduced for testing
+GENERATIONS = 2
+TOP_PERCENT = 0.1
+MUTATION_RATE = 0.1
 OUTPUT_DIR = 'optimization_results'
 CSV_FILENAME = 'hbt_optimization_results.csv'
 PLOT_FILENAME = 'hbt_optimization_progress.png'
 
-# Hyperparameter search space
+# Hyperparameter space
 PARAM_SPACE = {
     'notebook_type': ['trimmed', 'untrimmed'],
-    'state': [1, 2, 3],
-    'epochs': list(range(10, 51, 5))  # 10 to 50, step of 5
+    'state': {
+        'mode1': [1, 3],
+        'mode2': [2, 3],
+    },
+    'epochs': list(range(10, 51, 5)),
+    'validation_split': [0.1, 0.15, 0.2, 0.25, 0.3],
+    'activation_func': ['relu', 'sigmoid', 'tanh'],
+    'loss_func': ['mse', 'mae'],
+    'optimizer_func': ['adam', 'sgd', 'rmsprop'],
+    'outlier_cutoff': list(range(80, 101, 2))
 }
 
-# Reserved shots (unchanged from original)
 RESERVED_SHOTS = {
     'mode1': {1: 119671, 3: 119671},
     'mode2': {2: 114458, 3: 114458}
 }
 
-def generate_individual():
-    """Generate a random individual (set of hyperparameters)."""
+def get_available_kernels():
+    return find_kernel_specs().keys()
+
+def generate_individual(mode):
     return {
         'notebook_type': np.random.choice(PARAM_SPACE['notebook_type']),
-        'state': np.random.choice(PARAM_SPACE['state']),
-        'epochs': np.random.choice(PARAM_SPACE['epochs']),
+        'state': int(np.random.choice(PARAM_SPACE['state'][mode])),
+        'epochs': int(np.random.choice(PARAM_SPACE['epochs'])),
+        'validation_split': float(np.random.choice(PARAM_SPACE['validation_split'])),
+        'activation_func': np.random.choice(PARAM_SPACE['activation_func']),
+        'loss_func': np.random.choice(PARAM_SPACE['loss_func']),
+        'optimizer_func': np.random.choice(PARAM_SPACE['optimizer_func']),
+        'outlier_cutoff': float(np.random.choice(PARAM_SPACE['outlier_cutoff'])),
         'id': str(uuid.uuid4())
     }
 
-def run_model(individual, mode='mode1'):
-    """Run the original script with given hyperparameters and return metrics."""
-    # Prepare output file paths
-    output_true = f"results_{individual['notebook_type']}_state_{individual['state']}_ma2_true.npy"
-    output_pred = f"results_{individual['notebook_type']}_state_{individual['state']}_ma2_pred.npy"
-    output_notebook = os.path.join(OUTPUT_DIR, f"{individual['id']}_output.ipynb")
-    
-    # Construct command to run the original script
-    cmd = [
-        'python', 'compare_hbt_predictions.py',
-        '--mode', mode,
-        # Pass parameters via environment variables or modify script to accept them
-    ]
-    
-    # Create a temporary script with modified parameters
-    with open('compare_hbt_predictions.py', 'r') as f:
-        original_code = f.read()
-    
-    # Modify parameters in the script
-    modified_code = original_code
-    modified_code = modified_code.replace(
-        f"NOTEBOOKS = {{",
-        f"NOTEBOOKS = {{\n    'trimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/trimmed_HBT_analysis.ipynb',\n    'untrimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/untrimmed_HBT_analysis.ipynb'\n}}\nEPOCHS = {individual['epochs']}\n"
+# ==== Refactored Evaluation Logic ====
+
+def validate_individual(individual, mode):
+    return individual['state'] in RESERVED_SHOTS[mode]
+
+def construct_paths(individual):
+    base = f"results_{individual['notebook_type']}_state_{individual['state']}_ma2"
+    return (
+        f"{individual['notebook_type']}_HBT_analysis.ipynb",
+        os.path.join(OUTPUT_DIR, f"{individual['id']}_output.ipynb"),
+        f"{base}_true.npy",
+        f"{base}_pred.npy"
     )
-    modified_code = modified_code.replace(
-        f"STATES = STATES_MODE1 if args.mode == 'mode1' else STATES_MODE2",
-        f"STATES = [{individual['state']}]"
+
+def prepare_parameters(individual, mode):
+    return {
+        'state': int(individual['state']),
+        'selected_data_type': 'ma2',
+        'RESERVED_SHOT': int(RESERVED_SHOTS[mode][individual['state']]),
+        'EPOCH_NUM': int(individual['epochs']),
+        'VALIDATION_SPLIT': float(individual['validation_split']),
+        'ACTIVATION_FUNC': individual['activation_func'],
+        'LOSS_FUNC': individual['loss_func'],
+        'OPTIMIZER_FUNC': individual['optimizer_func'],
+        'OUTLIER_CUTOFF': float(individual['outlier_cutoff'])
+    }
+
+def execute_notebook(input_nb, output_nb, parameters, kernel_name):
+    pm.execute_notebook(
+        input_path=input_nb,
+        output_path=output_nb,
+        parameters=parameters,
+        kernel_name=kernel_name,
+        cwd=OUTPUT_DIR
     )
-    
-    temp_script = f"temp_{individual['id']}.py"
-    with open(temp_script, 'w') as f:
-        f.write(modified_code)
-    
+
+def load_result_arrays(true_path, pred_path):
+    true = np.load(true_path) if os.path.exists(true_path) else None
+    pred = np.load(pred_path) if os.path.exists(pred_path) else None
+    return true, pred
+
+def validate_result_data(true, pred, individual_id):
+    if true is None or pred is None:
+        print(f"Missing result files for {individual_id}")
+        return False
+    if np.any(np.isnan(true)) or np.any(np.isnan(pred)) or \
+       np.any(np.isinf(true)) or np.any(np.isinf(pred)) or \
+       np.any(true < 0) or np.any(pred < 0):
+        print(f"Invalid values in data for {individual_id}")
+        return False
+    return True
+
+def compute_mape(true, pred):
+    true = true.flatten()
+    pred = pred.flatten()
+    min_len = min(len(true), len(pred))
+    errors = np.abs(true[:min_len] - pred[:min_len]) / (np.max(np.abs(true[:min_len])) + 1e-8)
+    return np.mean(errors) * 100
+
+def print_summary(individual, mape, elapsed):
+    print(f"Success for {individual['id']}: "
+          f"type={individual['notebook_type']} state={individual['state']} "
+          f"epochs={individual['epochs']} split={individual['validation_split']} "
+          f"act={individual['activation_func']} loss={individual['loss_func']} opt={individual['optimizer_func']} "
+          f"cutoff={individual['outlier_cutoff']} MAPE={mape:.4f}% time={elapsed:.2f}s")
+
+def evaluate_individual(individual, mode='mode1', kernel_name='python3'):
+    start = time.time()
+
+    if not validate_individual(individual, mode):
+        print(f"Invalid state for {individual['id']}")
+        return None, None
+
+    input_nb, output_nb, path_true, path_pred = construct_paths(individual)
+    params = prepare_parameters(individual, mode)
+
     try:
-        # Run the modified script
-        result = subprocess.run(['python', temp_script], capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"Error running model for individual {individual['id']}: {result.stderr}")
+        if not os.path.exists(input_nb):
+            print(f"Notebook not found: {input_nb}")
             return None, None
-        
-        # Load results
-        true_data = np.load(output_true) if os.path.exists(output_true) else None
-        pred_data = np.load(output_pred) if os.path.exists(output_pred) else None
-        
-        if true_data is None or pred_data is None:
+
+        execute_notebook(input_nb, output_nb, params, kernel_name)
+        true_data, pred_data = load_result_arrays(path_true, path_pred)
+
+        if not validate_result_data(true_data, pred_data, individual['id']):
             return None, None
-        
-        # Calculate chi-squared
-        true_data = true_data.flatten()
-        pred_data = pred_data.flatten()
-        if len(true_data) != len(pred_data):
-            return None, None
-        
-        # Normalize data for chi-squared
-        true_data = true_data + 1e-8  # Avoid division by zero
-        expected = true_data / np.sum(true_data)
-        observed = pred_data / np.sum(pred_data)
-        chi2, _ = chisquare(observed, expected)
-        
-        # Calculate MAPE
-        errors = np.abs(true_data - pred_data) / (np.max(np.abs(true_data)) + 1e-8) * 100
-        mape = np.mean(errors)
-        
-        return chi2, mape
-    
+
+        mape = compute_mape(true_data, pred_data)
+        print_summary(individual, mape, time.time() - start)
+        return None, mape
+
     except Exception as e:
-        print(f"Exception in run_model for {individual['id']}: {str(e)}")
+        print(f"Exception for {individual['id']}: {e}")
         return None, None
     finally:
-        # Clean up temporary script
-        if os.path.exists(temp_script):
-            os.remove(temp_script)
+        if os.path.exists(output_nb):
+            os.remove(output_nb)
+
+# ==== Genetic Algorithm ====
 
 def crossover(parent1, parent2):
-    """Perform crossover between two parents."""
     child = {}
-    for key in ['notebook_type', 'state', 'epochs']:
+    for key in ['notebook_type', 'state', 'epochs', 'validation_split',
+                'activation_func', 'loss_func', 'optimizer_func', 'outlier_cutoff']:
         child[key] = np.random.choice([parent1[key], parent2[key]])
     child['id'] = str(uuid.uuid4())
     return child
 
-def mutate(individual):
-    """Apply mutation to an individual."""
+def mutate(individual, mode):
     mutated = copy.deepcopy(individual)
     if np.random.random() < MUTATION_RATE:
-        param_to_mutate = np.random.choice(['notebook_type', 'state', 'epochs'])
-        mutated[param_to_mutate] = np.random.choice(PARAM_SPACE[param_to_mutate])
+        param = np.random.choice(['notebook_type', 'state', 'epochs', 'validation_split',
+                                  'activation_func', 'loss_func', 'optimizer_func', 'outlier_cutoff'])
+        if param == 'state':
+            mutated[param] = int(np.random.choice(PARAM_SPACE['state'][mode]))
+        elif param in ['validation_split', 'outlier_cutoff']:
+            mutated[param] = float(np.random.choice(PARAM_SPACE[param]))
+        else:
+            mutated[param] = np.random.choice(PARAM_SPACE[param])
+        if param == 'epochs':
+            mutated[param] = int(mutated[param])
     return mutated
 
 def genetic_algorithm(mode='mode1'):
-    """Run genetic algorithm to optimize hyperparameters."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    results_df = pd.DataFrame(columns=['generation', 'individual_id', 'notebook_type', 'state', 'epochs', 'chi2', 'mape'])
-    
-    # Initialize population
-    population = [generate_individual() for _ in range(POPULATION_SIZE)]
+    results_df = pd.DataFrame(columns=['generation', 'individual_id', 'notebook_type', 'state', 'epochs',
+                                       'validation_split', 'activation_func', 'loss_func', 'optimizer_func',
+                                       'outlier_cutoff', 'mape'], dtype=object)
+
+    population = [generate_individual(mode) for _ in range(POPULATION_SIZE)]
     best_mape = float('inf')
     best_params = None
     mape_history = []
-    
+
+    kernel_name = 'conda-base-py' if 'conda-base-py' in get_available_kernels() else 'python3'
+    print(f"Using kernel: {kernel_name}")
+
     for generation in range(GENERATIONS):
-        print(f"\nGeneration {generation + 1}/{GENERATIONS}")
-        
-        # Evaluate fitness
-        fitness_scores = []
-        for individual in population:
-            chi2, mape = run_model(individual, mode)
-            if chi2 is None or mape is None:
+        print(f"\nGeneration {generation + 1}/{GENERATIONS} ({time.strftime('%H:%M:%S')})")
+        generation_start = time.time()
+        fitness = []
+
+        for i, individual in enumerate(population, 1):
+            print(f"Evaluating {i}/{POPULATION_SIZE} (ID: {individual['id']})")
+            _, mape = evaluate_individual(individual, mode, kernel_name)
+            if mape is None:
                 continue
-            
-            fitness_scores.append({
-                'individual': individual,
-                'chi2': chi2,
-                'mape': mape
-            })
-            
-            # Save to CSV
-            results_df = results_df.append({
+            fitness.append({'individual': individual, 'mape': mape})
+            results_df = pd.concat([results_df, pd.DataFrame([{
                 'generation': generation + 1,
                 'individual_id': individual['id'],
                 'notebook_type': individual['notebook_type'],
                 'state': individual['state'],
                 'epochs': individual['epochs'],
-                'chi2': chi2,
+                'validation_split': individual['validation_split'],
+                'activation_func': individual['activation_func'],
+                'loss_func': individual['loss_func'],
+                'optimizer_func': individual['optimizer_func'],
+                'outlier_cutoff': individual['outlier_cutoff'],
                 'mape': mape
-            }, ignore_index=True)
-            
+            }])], ignore_index=True)
+
             if mape < best_mape:
                 best_mape = mape
                 best_params = copy.deepcopy(individual)
-        
-        if not fitness_scores:
-            print("No valid models in this generation. Terminating.")
+                print(f"New best MAPE: {best_mape:.4f}%")
+
+        if not fitness:
+            print("No valid models. Terminating.")
             break
-        
-        # Save results to CSV
+
         results_df.to_csv(os.path.join(OUTPUT_DIR, CSV_FILENAME), index=False)
-        
-        # Select top performers
-        fitness_scores.sort(key=lambda x: x['mape'])  # Sort by MAPE
-        n_top = max(1, int(POPULATION_SIZE * TOP_PERCENT))
-        top_individuals = [fs['individual'] for fs in fitness_scores[:n_top]]
-        
-        # Track average MAPE for plotting
-        mape_history.append(np.mean([fs['mape'] for fs in fitness_scores]))
-        
-        # Generate new population
+        avg_mape = np.mean([f['mape'] for f in fitness])
+        mape_history.append(avg_mape)
+        print(f"Generation {generation + 1} summary: avg MAPE={avg_mape:.4f}, best so far={best_mape:.4f}, time={time.time() - generation_start:.2f}s")
+
+        top_n = max(2, int(POPULATION_SIZE * TOP_PERCENT))
+        fitness.sort(key=lambda x: x['mape'])
+        top_individuals = [f['individual'] for f in fitness[:min(top_n, len(fitness))]]
+
+        if len(top_individuals) < 2:
+            print(f"Only {len(top_individuals)} valid individuals. Regenerating population.")
+            population = [generate_individual(mode) for _ in range(POPULATION_SIZE)]
+            continue
+
         new_population = top_individuals.copy()
         while len(new_population) < POPULATION_SIZE:
-            parent1, parent2 = np.random.choice(top_individuals, 2, replace=False)
-            child = crossover(parent1, parent2)
-            child = mutate(child)
+            p1, p2 = np.random.choice(top_individuals, 2, replace=False)
+            child = crossover(p1, p2)
+            child = mutate(child, mode)
             new_population.append(child)
-        
+
         population = new_population
-    
-    # Plot optimization progress
+
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, len(mape_history) + 1), mape_history, '-o')
     plt.xlabel('Generation')
@@ -204,15 +255,16 @@ def genetic_algorithm(mode='mode1'):
     plt.grid(True)
     plt.savefig(os.path.join(OUTPUT_DIR, PLOT_FILENAME))
     plt.close()
-    
-    print(f"\nBest parameters found: {best_params}")
-    print(f"Best MAPE: {best_mape:.2f}%")
+
+    print(f"\nOptimization complete. Best MAPE: {best_mape:.2f}%")
+    print(f"Best Parameters: {best_params}")
     return best_params, best_mape
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Optimize HBT prediction hyperparameters using genetic algorithm.")
+    import argparse
+    parser = argparse.ArgumentParser(description="Optimize the prediction hyperparameters using genetic algorithm.")
     parser.add_argument('--mode', choices=['mode1', 'mode2'], default='mode1',
-                        help='Execution mode: mode1 (states 1, 3 with shot 119671), mode2 (states 2, 3 with shot 114412)')
+                        help='Execution mode: mode1 (states 1, 3 with shot 119671), mode2 (states 2, 3 with shot 114458)')
     args = parser.parse_args()
     
     best_params, best_mape = genetic_algorithm(args.mode)
