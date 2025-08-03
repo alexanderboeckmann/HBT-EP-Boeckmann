@@ -7,10 +7,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import papermill as pm
 from jupyter_client.kernelspec import find_kernel_specs
+import shutil
 
 # Configuration
 POPULATION_SIZE = 2  # Reduced for testing
-GENERATIONS = 2
+GENERATIONS = 3
 TOP_PERCENT = 0.1
 MUTATION_RATE = 0.1
 OUTPUT_DIR = 'optimization_results'
@@ -20,11 +21,8 @@ PLOT_FILENAME = 'hbt_optimization_progress.png'
 # Hyperparameter space
 PARAM_SPACE = {
     'notebook_type': ['trimmed', 'untrimmed'],
-    'state': {
-        'mode1': [1, 3],
-        'mode2': [2, 3],
-    },
-    'epochs': list(range(10, 51, 5)),
+    'state': [1, 2, 3],  # All possible states
+    'epochs': list(range(10, 26, 5)),
     'validation_split': [0.1, 0.15, 0.2, 0.25, 0.3],
     'activation_func': ['relu', 'sigmoid', 'tanh'],
     'loss_func': ['mse', 'mae'],
@@ -32,18 +30,24 @@ PARAM_SPACE = {
     'outlier_cutoff': list(range(80, 101, 2))
 }
 
+# Define RESERVED_SHOTS with multiple options for state 3
 RESERVED_SHOTS = {
-    'mode1': {1: 119671, 3: 119671},
-    'mode2': {2: 114458, 3: 114458}
+    1: [119671],
+    2: [114458],
+    3: [119671, 114458]  # State 3 can use either shot number
 }
 
 def get_available_kernels():
     return find_kernel_specs().keys()
 
-def generate_individual(mode):
+def generate_individual():
+    state = int(np.random.choice(PARAM_SPACE['state']))
+    # Randomly choose a RESERVED_SHOT based on the state
+    reserved_shot = int(np.random.choice(RESERVED_SHOTS[state]))
     return {
         'notebook_type': np.random.choice(PARAM_SPACE['notebook_type']),
-        'state': int(np.random.choice(PARAM_SPACE['state'][mode])),
+        'state': state,
+        'reserved_shot': reserved_shot,  # Store the chosen shot
         'epochs': int(np.random.choice(PARAM_SPACE['epochs'])),
         'validation_split': float(np.random.choice(PARAM_SPACE['validation_split'])),
         'activation_func': np.random.choice(PARAM_SPACE['activation_func']),
@@ -53,25 +57,26 @@ def generate_individual(mode):
         'id': str(uuid.uuid4())
     }
 
-# ==== Refactored Evaluation Logic ====
-
-def validate_individual(individual, mode):
-    return individual['state'] in RESERVED_SHOTS[mode]
+def validate_individual(individual):
+    # Check if the state and reserved_shot combination is valid
+    return individual['state'] in RESERVED_SHOTS and individual['reserved_shot'] in RESERVED_SHOTS[individual['state']]
 
 def construct_paths(individual):
+    individual_dir = os.path.join(OUTPUT_DIR, f"individual_{individual['id']}")
     base = f"results_{individual['notebook_type']}_state_{individual['state']}_ma2"
     return (
         f"{individual['notebook_type']}_HBT_analysis.ipynb",
-        os.path.join(OUTPUT_DIR, f"{individual['id']}_output.ipynb"),
-        f"{base}_true.npy",
-        f"{base}_pred.npy"
+        os.path.join(individual_dir, f"{individual['id']}_output.ipynb"),
+        os.path.join(individual_dir, f"{base}_true.npy"),
+        os.path.join(individual_dir, f"{base}_pred.npy"),
+        individual_dir
     )
 
-def prepare_parameters(individual, mode):
+def prepare_parameters(individual):
     return {
         'state': int(individual['state']),
         'selected_data_type': 'ma2',
-        'RESERVED_SHOT': int(RESERVED_SHOTS[mode][individual['state']]),
+        'RESERVED_SHOT': int(individual['reserved_shot']),  # Use the stored shot
         'EPOCH_NUM': int(individual['epochs']),
         'VALIDATION_SPLIT': float(individual['validation_split']),
         'ACTIVATION_FUNC': individual['activation_func'],
@@ -80,13 +85,14 @@ def prepare_parameters(individual, mode):
         'OUTLIER_CUTOFF': float(individual['outlier_cutoff'])
     }
 
-def execute_notebook(input_nb, output_nb, parameters, kernel_name):
+def execute_notebook(input_nb, output_nb, parameters, kernel_name, individual_dir):
+    os.makedirs(individual_dir, exist_ok=True)
     pm.execute_notebook(
         input_path=input_nb,
         output_path=output_nb,
         parameters=parameters,
         kernel_name=kernel_name,
-        cwd=OUTPUT_DIR
+        cwd=individual_dir
     )
 
 def load_result_arrays(true_path, pred_path):
@@ -115,26 +121,27 @@ def compute_mape(true, pred):
 def print_summary(individual, mape, elapsed):
     print(f"Success for {individual['id']}: "
           f"type={individual['notebook_type']} state={individual['state']} "
-          f"epochs={individual['epochs']} split={individual['validation_split']} "
-          f"act={individual['activation_func']} loss={individual['loss_func']} opt={individual['optimizer_func']} "
+          f"shot={individual['reserved_shot']} epochs={individual['epochs']} "
+          f"split={individual['validation_split']} act={individual['activation_func']} "
+          f"loss={individual['loss_func']} opt={individual['optimizer_func']} "
           f"cutoff={individual['outlier_cutoff']} MAPE={mape:.4f}% time={elapsed:.2f}s")
 
-def evaluate_individual(individual, mode='mode1', kernel_name='python3'):
+def evaluate_individual(individual, kernel_name='python3'):
     start = time.time()
 
-    if not validate_individual(individual, mode):
-        print(f"Invalid state for {individual['id']}")
+    if not validate_individual(individual):
+        print(f"Invalid state or shot for {individual['id']}")
         return None, None
 
-    input_nb, output_nb, path_true, path_pred = construct_paths(individual)
-    params = prepare_parameters(individual, mode)
+    input_nb, output_nb, path_true, path_pred, individual_dir = construct_paths(individual)
+    params = prepare_parameters(individual)
 
     try:
         if not os.path.exists(input_nb):
             print(f"Notebook not found: {input_nb}")
             return None, None
 
-        execute_notebook(input_nb, output_nb, params, kernel_name)
+        execute_notebook(input_nb, output_nb, params, kernel_name, individual_dir)
         true_data, pred_data = load_result_arrays(path_true, path_pred)
 
         if not validate_result_data(true_data, pred_data, individual['id']):
@@ -148,27 +155,29 @@ def evaluate_individual(individual, mode='mode1', kernel_name='python3'):
         print(f"Exception for {individual['id']}: {e}")
         return None, None
     finally:
-        if os.path.exists(output_nb):
-            os.remove(output_nb)
-
-# ==== Genetic Algorithm ====
+        pass
 
 def crossover(parent1, parent2):
     child = {}
-    for key in ['notebook_type', 'state', 'epochs', 'validation_split',
+    for key in ['notebook_type', 'state', 'reserved_shot', 'epochs', 'validation_split',
                 'activation_func', 'loss_func', 'optimizer_func', 'outlier_cutoff']:
         child[key] = np.random.choice([parent1[key], parent2[key]])
     child['id'] = str(uuid.uuid4())
+    # Ensure reserved_shot is valid for the chosen state
+    if child['state'] in RESERVED_SHOTS and child['reserved_shot'] not in RESERVED_SHOTS[child['state']]:
+        child['reserved_shot'] = int(np.random.choice(RESERVED_SHOTS[child['state']]))
     return child
 
-def mutate(individual, mode):
+def mutate(individual):
     mutated = copy.deepcopy(individual)
     if np.random.random() < MUTATION_RATE:
         param = np.random.choice(['notebook_type', 'state', 'epochs', 'validation_split',
                                   'activation_func', 'loss_func', 'optimizer_func', 'outlier_cutoff'])
         if param == 'state':
-            mutated[param] = int(np.random.choice(PARAM_SPACE['state'][mode]))
-        elif param in ['validation_split', 'outlier_cutoff']:
+            mutated['state'] = int(np.random.choice(PARAM_SPACE['state']))
+            # Update reserved_shot for the new state
+            mutated['reserved_shot'] = int(np.random.choice(RESERVED_SHOTS[mutated['state']]))
+        elif param == 'validation_split' or param == 'outlier_cutoff':
             mutated[param] = float(np.random.choice(PARAM_SPACE[param]))
         else:
             mutated[param] = np.random.choice(PARAM_SPACE[param])
@@ -176,15 +185,16 @@ def mutate(individual, mode):
             mutated[param] = int(mutated[param])
     return mutated
 
-def genetic_algorithm(mode='mode1'):
+def genetic_algorithm():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    results_df = pd.DataFrame(columns=['generation', 'individual_id', 'notebook_type', 'state', 'epochs',
-                                       'validation_split', 'activation_func', 'loss_func', 'optimizer_func',
-                                       'outlier_cutoff', 'mape'], dtype=object)
+    results_df = pd.DataFrame(columns=['generation', 'individual_id', 'notebook_type', 'state', 'reserved_shot',
+                                       'epochs', 'validation_split', 'activation_func', 'loss_func',
+                                       'optimizer_func', 'outlier_cutoff', 'mape'], dtype=object)
 
-    population = [generate_individual(mode) for _ in range(POPULATION_SIZE)]
+    population = [generate_individual() for _ in range(POPULATION_SIZE)]
     best_mape = float('inf')
     best_params = None
+    best_individual_dir = None
     mape_history = []
 
     kernel_name = 'conda-base-py' if 'conda-base-py' in get_available_kernels() else 'python3'
@@ -197,15 +207,16 @@ def genetic_algorithm(mode='mode1'):
 
         for i, individual in enumerate(population, 1):
             print(f"Evaluating {i}/{POPULATION_SIZE} (ID: {individual['id']})")
-            _, mape = evaluate_individual(individual, mode, kernel_name)
+            _, mape = evaluate_individual(individual, kernel_name)
             if mape is None:
                 continue
             fitness.append({'individual': individual, 'mape': mape})
-            results_df = pd.concat([results_df, pd.DataFrame([{
+            new_row = pd.DataFrame([{
                 'generation': generation + 1,
                 'individual_id': individual['id'],
                 'notebook_type': individual['notebook_type'],
                 'state': individual['state'],
+                'reserved_shot': individual['reserved_shot'],
                 'epochs': individual['epochs'],
                 'validation_split': individual['validation_split'],
                 'activation_func': individual['activation_func'],
@@ -213,11 +224,16 @@ def genetic_algorithm(mode='mode1'):
                 'optimizer_func': individual['optimizer_func'],
                 'outlier_cutoff': individual['outlier_cutoff'],
                 'mape': mape
-            }])], ignore_index=True)
+            }])
+            if results_df.empty:
+                results_df = new_row
+            else:
+                results_df = pd.concat([results_df, new_row], ignore_index=True)
 
             if mape < best_mape:
                 best_mape = mape
                 best_params = copy.deepcopy(individual)
+                best_individual_dir = os.path.join(OUTPUT_DIR, f"individual_{individual['id']}")
                 print(f"New best MAPE: {best_mape:.4f}%")
 
         if not fitness:
@@ -235,17 +251,22 @@ def genetic_algorithm(mode='mode1'):
 
         if len(top_individuals) < 2:
             print(f"Only {len(top_individuals)} valid individuals. Regenerating population.")
-            population = [generate_individual(mode) for _ in range(POPULATION_SIZE)]
+            population = [generate_individual() for _ in range(POPULATION_SIZE)]
             continue
 
         new_population = top_individuals.copy()
         while len(new_population) < POPULATION_SIZE:
             p1, p2 = np.random.choice(top_individuals, 2, replace=False)
             child = crossover(p1, p2)
-            child = mutate(child, mode)
+            child = mutate(child)
             new_population.append(child)
 
         population = new_population
+
+        for individual in population:
+            individual_dir = os.path.join(OUTPUT_DIR, f"individual_{individual['id']}")
+            if individual_dir != best_individual_dir and os.path.exists(individual_dir):
+                shutil.rmtree(individual_dir)
 
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, len(mape_history) + 1), mape_history, '-o')
@@ -258,13 +279,8 @@ def genetic_algorithm(mode='mode1'):
 
     print(f"\nOptimization complete. Best MAPE: {best_mape:.2f}%")
     print(f"Best Parameters: {best_params}")
+    print(f"Best individual files retained in: {best_individual_dir}")
     return best_params, best_mape
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Optimize the prediction hyperparameters using genetic algorithm.")
-    parser.add_argument('--mode', choices=['mode1', 'mode2'], default='mode1',
-                        help='Execution mode: mode1 (states 1, 3 with shot 119671), mode2 (states 2, 3 with shot 114458)')
-    args = parser.parse_args()
-    
-    best_params, best_mape = genetic_algorithm(args.mode)
+    best_params, best_mape = genetic_algorithm()
