@@ -5,13 +5,15 @@ import copy
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 import papermill as pm
 from jupyter_client.kernelspec import find_kernel_specs
 import shutil
+import random 
 
 # Configuration
-POPULATION_SIZE = 2  # Reduced for testing
-GENERATIONS = 3
+POPULATION_SIZE = 100
+GENERATIONS = 10
 TOP_PERCENT = 0.1
 MUTATION_RATE = 0.1
 OUTPUT_DIR = 'optimization_results'
@@ -21,20 +23,26 @@ PLOT_FILENAME = 'hbt_optimization_progress.png'
 # Hyperparameter space
 PARAM_SPACE = {
     'notebook_type': ['trimmed', 'untrimmed'],
-    'state': [1, 2, 3],  # All possible states
-    'epochs': list(range(10, 26, 5)),
+    'state': [1, 2, 3],
+    'epochs': list(range(10, 51, 5)),
     'validation_split': [0.1, 0.15, 0.2, 0.25, 0.3],
     'activation_func': ['relu', 'sigmoid', 'tanh'],
     'loss_func': ['mse', 'mae'],
     'optimizer_func': ['adam', 'sgd', 'rmsprop'],
-    'outlier_cutoff': list(range(80, 101, 2))
+    'outlier_cutoff': list(range(80, 101, 2)),
+    'num_conv2d_layers': [1, 2, 3],
+    'num_dense_layers': [1, 2, 3],
+    'conv2d_neurons': [8, 16, 32, 64],
+    'conv2d_size': [(3, 3), (4, 4), (5, 5), (7, 7), (8, 8)],
+    'dense_layer_neurons': [8, 16, 32, 64],
+    'max_pooling_size': [(2, 2), (3, 3), (4, 4)]
 }
 
 # Define RESERVED_SHOTS with multiple options for state 3
 RESERVED_SHOTS = {
     1: [119671],
     2: [114458],
-    3: [119671, 114458]  # State 3 can use either shot number
+    3: [119671, 114458]
 }
 
 def get_available_kernels():
@@ -42,27 +50,33 @@ def get_available_kernels():
 
 def generate_individual():
     state = int(np.random.choice(PARAM_SPACE['state']))
-    # Randomly choose a RESERVED_SHOT based on the state
     reserved_shot = int(np.random.choice(RESERVED_SHOTS[state]))
+    num_conv2d = int(np.random.choice(PARAM_SPACE['num_conv2d_layers']))
+    num_dense = int(np.random.choice(PARAM_SPACE['num_dense_layers']))
     return {
         'notebook_type': np.random.choice(PARAM_SPACE['notebook_type']),
         'state': state,
-        'reserved_shot': reserved_shot,  # Store the chosen shot
+        'reserved_shot': reserved_shot,
         'epochs': int(np.random.choice(PARAM_SPACE['epochs'])),
         'validation_split': float(np.random.choice(PARAM_SPACE['validation_split'])),
         'activation_func': np.random.choice(PARAM_SPACE['activation_func']),
         'loss_func': np.random.choice(PARAM_SPACE['loss_func']),
         'optimizer_func': np.random.choice(PARAM_SPACE['optimizer_func']),
         'outlier_cutoff': float(np.random.choice(PARAM_SPACE['outlier_cutoff'])),
+        'num_conv2d_layers': num_conv2d,
+        'num_dense_layers': num_dense,
+        'conv2d_neurons': [int(np.random.choice(PARAM_SPACE['conv2d_neurons'])) for _ in range(num_conv2d)],
+        'conv2d_size': [random.choice(PARAM_SPACE['conv2d_size']) for _ in range(num_conv2d)],
+        'dense_layer_neurons': [int(np.random.choice(PARAM_SPACE['dense_layer_neurons'])) for _ in range(num_dense)],
+        'max_pooling_size': random.choice(PARAM_SPACE['max_pooling_size']),
         'id': str(uuid.uuid4())
     }
 
 def validate_individual(individual):
-    # Check if the state and reserved_shot combination is valid
     return individual['state'] in RESERVED_SHOTS and individual['reserved_shot'] in RESERVED_SHOTS[individual['state']]
 
-def construct_paths(individual):
-    individual_dir = os.path.join(OUTPUT_DIR, f"individual_{individual['id']}")
+def construct_paths(individual, run_dir):
+    individual_dir = os.path.join(run_dir, f"individual_{individual['id']}")
     base = f"results_{individual['notebook_type']}_state_{individual['state']}_ma2"
     return (
         f"{individual['notebook_type']}_HBT_analysis.ipynb",
@@ -76,24 +90,35 @@ def prepare_parameters(individual):
     return {
         'state': int(individual['state']),
         'selected_data_type': 'ma2',
-        'RESERVED_SHOT': int(individual['reserved_shot']),  # Use the stored shot
+        'RESERVED_SHOT': int(individual['reserved_shot']),
         'EPOCH_NUM': int(individual['epochs']),
         'VALIDATION_SPLIT': float(individual['validation_split']),
         'ACTIVATION_FUNC': individual['activation_func'],
         'LOSS_FUNC': individual['loss_func'],
         'OPTIMIZER_FUNC': individual['optimizer_func'],
-        'OUTLIER_CUTOFF': float(individual['outlier_cutoff'])
+        'OUTLIER_CUTOFF': float(individual['outlier_cutoff']),
+        'NUM_CONV2D_LAYERS': int(individual['num_conv2d_layers']),
+        'NUM_DENSE_LAYERS': int(individual['num_dense_layers']),
+        'CONV2D_NEURONS': individual['conv2d_neurons'],
+        'CONV2D_SIZE': individual['conv2d_size'],
+        'DENSE_LAYER_NEURONS': individual['dense_layer_neurons'],
+        'MAX_POOLING_SIZE': individual['max_pooling_size']
     }
 
 def execute_notebook(input_nb, output_nb, parameters, kernel_name, individual_dir):
     os.makedirs(individual_dir, exist_ok=True)
-    pm.execute_notebook(
-        input_path=input_nb,
-        output_path=output_nb,
-        parameters=parameters,
-        kernel_name=kernel_name,
-        cwd=individual_dir
-    )
+    try:
+        print(f"Executing notebook with parameters: {parameters}")
+        pm.execute_notebook(
+            input_path=input_nb,
+            output_path=output_nb,
+            parameters=parameters,
+            kernel_name=kernel_name,
+            cwd=individual_dir
+        )
+    except pm.PapermillExecutionError as e:
+        print(f"Exception for {parameters['individual_id']}: {str(e)}")
+        raise
 
 def load_result_arrays(true_path, pred_path):
     true = np.load(true_path) if os.path.exists(true_path) else None
@@ -124,16 +149,23 @@ def print_summary(individual, mape, elapsed):
           f"shot={individual['reserved_shot']} epochs={individual['epochs']} "
           f"split={individual['validation_split']} act={individual['activation_func']} "
           f"loss={individual['loss_func']} opt={individual['optimizer_func']} "
-          f"cutoff={individual['outlier_cutoff']} MAPE={mape:.4f}% time={elapsed:.2f}s")
+          f"cutoff={individual['outlier_cutoff']} "
+          f"conv2d_layers={individual['num_conv2d_layers']} "
+          f"dense_layers={individual['num_dense_layers']} "
+          f"conv2d_neurons={individual['conv2d_neurons']} "
+          f"conv2d_size={individual['conv2d_size']} "
+          f"dense_neurons={individual['dense_layer_neurons']} "
+          f"pool_size={individual['max_pooling_size']} "
+          f"MAPE={mape:.4f}% time={elapsed:.2f}s")
 
-def evaluate_individual(individual, kernel_name='python3'):
+def evaluate_individual(individual, kernel_name, run_dir):
     start = time.time()
 
     if not validate_individual(individual):
         print(f"Invalid state or shot for {individual['id']}")
         return None, None
 
-    input_nb, output_nb, path_true, path_pred, individual_dir = construct_paths(individual)
+    input_nb, output_nb, path_true, path_pred, individual_dir = construct_paths(individual, run_dir)
     params = prepare_parameters(individual)
 
     try:
@@ -160,10 +192,25 @@ def evaluate_individual(individual, kernel_name='python3'):
 def crossover(parent1, parent2):
     child = {}
     for key in ['notebook_type', 'state', 'reserved_shot', 'epochs', 'validation_split',
-                'activation_func', 'loss_func', 'optimizer_func', 'outlier_cutoff']:
+                'activation_func', 'loss_func', 'optimizer_func', 'outlier_cutoff',
+                'num_conv2d_layers', 'num_dense_layers']:
         child[key] = np.random.choice([parent1[key], parent2[key]])
+    
+    child['max_pooling_size'] = random.choice([parent1['max_pooling_size'], parent2['max_pooling_size']])
+    
+    child['conv2d_neurons'] = []
+    child['conv2d_size'] = []
+    for i in range(child['num_conv2d_layers']):
+        p = np.random.choice([parent1, parent2])
+        child['conv2d_neurons'].append(p['conv2d_neurons'][i] if i < len(p['conv2d_neurons']) else int(np.random.choice(PARAM_SPACE['conv2d_neurons'])))
+        child['conv2d_size'].append(p['conv2d_size'][i] if i < len(p['conv2d_size']) else random.choice(PARAM_SPACE['conv2d_size']))
+    
+    child['dense_layer_neurons'] = []
+    for i in range(child['num_dense_layers']):
+        p = np.random.choice([parent1, parent2])
+        child['dense_layer_neurons'].append(p['dense_layer_neurons'][i] if i < len(p['dense_layer_neurons']) else int(np.random.choice(PARAM_SPACE['dense_layer_neurons'])))
+    
     child['id'] = str(uuid.uuid4())
-    # Ensure reserved_shot is valid for the chosen state
     if child['state'] in RESERVED_SHOTS and child['reserved_shot'] not in RESERVED_SHOTS[child['state']]:
         child['reserved_shot'] = int(np.random.choice(RESERVED_SHOTS[child['state']]))
     return child
@@ -172,47 +219,167 @@ def mutate(individual):
     mutated = copy.deepcopy(individual)
     if np.random.random() < MUTATION_RATE:
         param = np.random.choice(['notebook_type', 'state', 'epochs', 'validation_split',
-                                  'activation_func', 'loss_func', 'optimizer_func', 'outlier_cutoff'])
+                                  'activation_func', 'loss_func', 'optimizer_func', 'outlier_cutoff',
+                                  'num_conv2d_layers', 'num_dense_layers', 'conv2d_neurons',
+                                  'conv2d_size', 'dense_layer_neurons', 'max_pooling_size'])
         if param == 'state':
             mutated['state'] = int(np.random.choice(PARAM_SPACE['state']))
-            # Update reserved_shot for the new state
             mutated['reserved_shot'] = int(np.random.choice(RESERVED_SHOTS[mutated['state']]))
         elif param == 'validation_split' or param == 'outlier_cutoff':
             mutated[param] = float(np.random.choice(PARAM_SPACE[param]))
+        elif param == 'num_conv2d_layers':
+            mutated[param] = int(np.random.choice(PARAM_SPACE[param]))
+            mutated['conv2d_neurons'] = [int(np.random.choice(PARAM_SPACE['conv2d_neurons'])) for _ in range(mutated[param])]
+            mutated['conv2d_size'] = [random.choice(PARAM_SPACE['conv2d_size']) for _ in range(mutated[param])]
+        elif param == 'num_dense_layers':
+            mutated[param] = int(np.random.choice(PARAM_SPACE[param]))
+            mutated['dense_layer_neurons'] = [int(np.random.choice(PARAM_SPACE['dense_layer_neurons'])) for _ in range(mutated[param])]
+        elif param == 'conv2d_neurons':
+            idx = np.random.randint(0, len(mutated['conv2d_neurons']))
+            mutated[param][idx] = int(np.random.choice(PARAM_SPACE[param]))
+        elif param == 'conv2d_size':
+            idx = np.random.randint(0, len(mutated['conv2d_size']))
+            mutated[param][idx] = random.choice(PARAM_SPACE[param])
+        elif param == 'dense_layer_neurons':
+            idx = np.random.randint(0, len(mutated['dense_layer_neurons']))
+            mutated[param][idx] = int(np.random.choice(PARAM_SPACE['dense_layer_neurons']))
+        elif param == 'max_pooling_size':
+            mutated[param] = random.choice(PARAM_SPACE[param])
         else:
             mutated[param] = np.random.choice(PARAM_SPACE[param])
         if param == 'epochs':
             mutated[param] = int(mutated[param])
     return mutated
 
-def genetic_algorithm():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    results_df = pd.DataFrame(columns=['generation', 'individual_id', 'notebook_type', 'state', 'reserved_shot',
-                                       'epochs', 'validation_split', 'activation_func', 'loss_func',
-                                       'optimizer_func', 'outlier_cutoff', 'mape'], dtype=object)
+def load_previous_population(run_dir):
+    csv_path = os.path.join(run_dir, CSV_FILENAME)
+    if not os.path.exists(csv_path):
+        print(f"No previous results found at {csv_path}. Starting fresh.")
+        return None, 0, None, float('inf')
 
-    population = [generate_individual() for _ in range(POPULATION_SIZE)]
-    best_mape = float('inf')
-    best_params = None
-    best_individual_dir = None
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        print("Previous CSV is empty. Starting fresh.")
+        return None, 0, None, float('inf')
+
+    # Get the last generation
+    last_gen = df['generation'].max()
+    last_gen_df = df[df['generation'] == last_gen]
+
+    # Reconstruct population
+    population = []
+    for _, row in last_gen_df.iterrows():
+        individual = {
+            'notebook_type': row['notebook_type'],
+            'state': int(row['state']),
+            'reserved_shot': int(row['reserved_shot']),
+            'epochs': int(row['epochs']),
+            'validation_split': float(row['validation_split']),
+            'activation_func': row['activation_func'],
+            'loss_func': row['loss_func'],
+            'optimizer_func': row['optimizer_func'],
+            'outlier_cutoff': float(row['outlier_cutoff']),
+            'num_conv2d_layers': int(row['num_conv2d_layers']),
+            'num_dense_layers': int(row['num_dense_layers']),
+            'conv2d_neurons': eval(row['conv2d_neurons']),  # Convert string representation to list
+            'conv2d_size': eval(row['conv2d_size']),        # Convert string representation to list of tuples
+            'dense_layer_neurons': eval(row['dense_layer_neurons']),
+            'max_pooling_size': eval(row['max_pooling_size']),
+            'id': row['individual_id']
+        }
+        if validate_individual(individual):
+            population.append(individual)
+
+    # Ensure population size
+    while len(population) < POPULATION_SIZE:
+        new_individual = generate_individual()
+        population.append(new_individual)
+
+    # Get best MAPE and parameters
+    best_mape = df['mape'].min()
+    best_row = df[df['mape'] == best_mape].iloc[0]
+    best_params = {
+        'notebook_type': best_row['notebook_type'],
+        'state': int(best_row['state']),
+        'reserved_shot': int(best_row['reserved_shot']),
+        'epochs': int(best_row['epochs']),
+        'validation_split': float(best_row['validation_split']),
+        'activation_func': best_row['activation_func'],
+        'loss_func': best_row['loss_func'],
+        'optimizer_func': best_row['optimizer_func'],
+        'outlier_cutoff': float(best_row['outlier_cutoff']),
+        'num_conv2d_layers': int(best_row['num_conv2d_layers']),
+        'num_dense_layers': int(best_row['num_dense_layers']),
+        'conv2d_neurons': eval(best_row['conv2d_neurons']),
+        'conv2d_size': eval(best_row['conv2d_size']),
+        'dense_layer_neurons': eval(best_row['dense_layer_neurons']),
+        'max_pooling_size': eval(best_row['max_pooling_size']),
+        'id': best_row['individual_id']
+    }
+    best_individual_dir = os.path.join(run_dir, f"individual_{best_params['id']}")
+
+    return population, last_gen, best_params, best_mape, best_individual_dir
+
+def create_analysis_plots(results_df, plot_dir):
+    os.makedirs(plot_dir, exist_ok=True)
+    plot_params = ['epochs', 'validation_split', 'outlier_cutoff', 'num_conv2d_layers', 'num_dense_layers']
+    
+    for param in plot_params:
+        plt.figure(figsize=(10, 6))
+        sns.scatterplot(data=results_df, x=param, y='mape', hue='generation', palette='viridis', size='generation', sizes=(50, 200))
+        plt.xlabel(param.replace('_', ' ').title())
+        plt.ylabel('MAPE (%)')
+        plt.title(f'MAPE vs {param.replace("_", " ").title()} by Generation')
+        plt.grid(True)
+        plt.savefig(os.path.join(plot_dir, f'mape_vs_{param}.png'))
+        plt.close()
+
+def genetic_algorithm(run_dir=None):
+    # Create or use existing run directory
+    if run_dir is None:
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        run_dir = os.path.join(OUTPUT_DIR, f'run_{timestamp}')
+    os.makedirs(run_dir, exist_ok=True)
+    plot_dir = os.path.join(run_dir, 'plot_analysis')
+    os.makedirs(plot_dir, exist_ok=True)
+
+    # Load previous population if available
+    population, start_gen, best_params, best_mape, best_individual_dir = load_previous_population(run_dir)
+    if population is None:
+        population = [generate_individual() for _ in range(POPULATION_SIZE)]
+        start_gen = 0
+        best_mape = float('inf')
+        best_params = None
+        best_individual_dir = None
+        results_df = pd.DataFrame(columns=['generation', 'individual_id', 'notebook_type', 'state', 'reserved_shot',
+                                           'epochs', 'validation_split', 'activation_func', 'loss_func',
+                                           'optimizer_func', 'outlier_cutoff', 'num_conv2d_layers',
+                                           'num_dense_layers', 'conv2d_neurons', 'conv2d_size',
+                                           'dense_layer_neurons', 'max_pooling_size', 'mape'], dtype=object)
+    else:
+        results_df = pd.read_csv(os.path.join(run_dir, CSV_FILENAME))
+        print(f"Resuming from generation {start_gen} with {len(population)} individuals")
+
     mape_history = []
+    if start_gen > 0:
+        mape_history = [results_df[results_df['generation'] == g]['mape'].mean() for g in range(1, start_gen + 1)]
 
     kernel_name = 'conda-base-py' if 'conda-base-py' in get_available_kernels() else 'python3'
     print(f"Using kernel: {kernel_name}")
 
-    for generation in range(GENERATIONS):
-        print(f"\nGeneration {generation + 1}/{GENERATIONS} ({time.strftime('%H:%M:%S')})")
+    for generation in range(start_gen + 1, GENERATIONS + 1):
+        print(f"\nGeneration {generation}/{GENERATIONS} ({time.strftime('%H:%M:%S')})")
         generation_start = time.time()
         fitness = []
 
         for i, individual in enumerate(population, 1):
             print(f"Evaluating {i}/{POPULATION_SIZE} (ID: {individual['id']})")
-            _, mape = evaluate_individual(individual, kernel_name)
+            _, mape = evaluate_individual(individual, kernel_name, run_dir)
             if mape is None:
                 continue
             fitness.append({'individual': individual, 'mape': mape})
             new_row = pd.DataFrame([{
-                'generation': generation + 1,
+                'generation': generation,
                 'individual_id': individual['id'],
                 'notebook_type': individual['notebook_type'],
                 'state': individual['state'],
@@ -223,6 +390,12 @@ def genetic_algorithm():
                 'loss_func': individual['loss_func'],
                 'optimizer_func': individual['optimizer_func'],
                 'outlier_cutoff': individual['outlier_cutoff'],
+                'num_conv2d_layers': individual['num_conv2d_layers'],
+                'num_dense_layers': individual['num_dense_layers'],
+                'conv2d_neurons': individual['conv2d_neurons'],
+                'conv2d_size': individual['conv2d_size'],
+                'dense_layer_neurons': individual['dense_layer_neurons'],
+                'max_pooling_size': individual['max_pooling_size'],
                 'mape': mape
             }])
             if results_df.empty:
@@ -233,17 +406,19 @@ def genetic_algorithm():
             if mape < best_mape:
                 best_mape = mape
                 best_params = copy.deepcopy(individual)
-                best_individual_dir = os.path.join(OUTPUT_DIR, f"individual_{individual['id']}")
+                best_individual_dir = os.path.join(run_dir, f"individual_{individual['id']}")
                 print(f"New best MAPE: {best_mape:.4f}%")
 
         if not fitness:
             print("No valid models. Terminating.")
             break
 
-        results_df.to_csv(os.path.join(OUTPUT_DIR, CSV_FILENAME), index=False)
+        results_df.to_csv(os.path.join(run_dir, CSV_FILENAME), index=False)
         avg_mape = np.mean([f['mape'] for f in fitness])
         mape_history.append(avg_mape)
-        print(f"Generation {generation + 1} summary: avg MAPE={avg_mape:.4f}, best so far={best_mape:.4f}, time={time.time() - generation_start:.2f}s")
+        print(f"Generation {generation} summary: avg MAPE={avg_mape:.4f}, best so far={best_mape:.4f}, time={time.time() - generation_start:.2f}s")
+
+        create_analysis_plots(results_df, plot_dir)
 
         top_n = max(2, int(POPULATION_SIZE * TOP_PERCENT))
         fitness.sort(key=lambda x: x['mape'])
@@ -263,24 +438,39 @@ def genetic_algorithm():
 
         population = new_population
 
-        for individual in population:
-            individual_dir = os.path.join(OUTPUT_DIR, f"individual_{individual['id']}")
-            if individual_dir != best_individual_dir and os.path.exists(individual_dir):
-                shutil.rmtree(individual_dir)
-
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, len(mape_history) + 1), mape_history, '-o')
     plt.xlabel('Generation')
     plt.ylabel('Average MAPE (%)')
     plt.title('Optimization Progress')
     plt.grid(True)
-    plt.savefig(os.path.join(OUTPUT_DIR, PLOT_FILENAME))
+    plt.savefig(os.path.join(plot_dir, PLOT_FILENAME))
     plt.close()
+
+    if best_individual_dir:
+        best_link = os.path.join(run_dir, 'best_individual')
+        try:
+            if os.path.exists(best_link):
+                if os.path.islink(best_link) or os.path.isdir(best_link):
+                    os.remove(best_link)
+                else:
+                    shutil.rmtree(best_link)
+            os.symlink(best_individual_dir, best_link)
+            print(f"Created symbolic link to best individual: {best_link}")
+        except OSError:
+            if os.path.exists(best_link):
+                shutil.rmtree(best_link)
+            shutil.copytree(best_individual_dir, best_link)
+            print(f"Copied best individual directory to: {best_link}")
 
     print(f"\nOptimization complete. Best MAPE: {best_mape:.2f}%")
     print(f"Best Parameters: {best_params}")
-    print(f"Best individual files retained in: {best_individual_dir}")
+    print(f"All run files (individuals, CSV, plots) saved in: {run_dir}")
+    print(f"Analysis plots saved in: {plot_dir}")
+    print(f"Best individual directory: {best_individual_dir}")
     return best_params, best_mape
 
 if __name__ == "__main__":
-    best_params, best_mape = genetic_algorithm()
+    # Example: Specify the run directory to resume (replace with your actual run directory)
+    run_dir = 'optimization_results/run_20250803_232855'  # Set to 'optimization_results/run_YYYYMMDD_HHMMSS' to resume a specific run
+    best_params, best_mape = genetic_algorithm(run_dir)

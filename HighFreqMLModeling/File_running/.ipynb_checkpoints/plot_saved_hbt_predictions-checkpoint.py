@@ -83,9 +83,9 @@ if not true_plotted:
 # ---------- 2. Plot predictions (adjusted for no normalization) ----------
 color_table = {
     ('trimmed', 1): 'blue',
-    ('untrimmed', 1): 'cyan',
+    ('untrimmed', 1): 'magenta',
     ('trimmed', 2): 'green',
-    ('untrimmed', 2): 'lime',
+    ('untrimmed', 2): 'cyan',
     ('trimmed', 3): 'red',
     ('untrimmed', 3): 'orange',
 }
@@ -128,7 +128,7 @@ for notebook_type in results:
         color = color_table.get((notebook_type, state), 'gray')
         label = f"Pred State {state} ({notebook_type})"
 
-        plt.plot(pred_time, pred_denorm, '--', color=color, label=label)
+        plt.plot(pred_time, pred_denorm, '-', color=color, label=label)
 
 
 
