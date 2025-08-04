@@ -12,9 +12,9 @@ import shutil
 import random 
 
 # Configuration
-POPULATION_SIZE = 100
+POPULATION_SIZE = 40
 GENERATIONS = 10
-TOP_PERCENT = 0.1
+TOP_PERCENT = 0.125
 MUTATION_RATE = 0.1
 OUTPUT_DIR = 'optimization_results'
 CSV_FILENAME = 'hbt_optimization_results.csv'
@@ -255,12 +255,12 @@ def load_previous_population(run_dir):
     csv_path = os.path.join(run_dir, CSV_FILENAME)
     if not os.path.exists(csv_path):
         print(f"No previous results found at {csv_path}. Starting fresh.")
-        return None, 0, None, float('inf')
+        return None, 0, None, float('inf'), None  # Return 5 values
 
     df = pd.read_csv(csv_path)
     if df.empty:
         print("Previous CSV is empty. Starting fresh.")
-        return None, 0, None, float('inf')
+        return None, 0, None, float('inf'), None  # Return 5 values
 
     # Get the last generation
     last_gen = df['generation'].max()
@@ -472,5 +472,5 @@ def genetic_algorithm(run_dir=None):
 
 if __name__ == "__main__":
     # Example: Specify the run directory to resume (replace with your actual run directory)
-    run_dir = 'optimization_results/run_20250803_232855'  # Set to 'optimization_results/run_YYYYMMDD_HHMMSS' to resume a specific run
+    run_dir = None #'optimization_results/run_20250803_232855'  # Set to 'optimization_results/run_YYYYMMDD_HHMMSS' to resume a specific run
     best_params, best_mape = genetic_algorithm(run_dir)

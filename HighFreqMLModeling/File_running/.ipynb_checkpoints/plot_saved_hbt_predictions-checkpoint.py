@@ -112,7 +112,7 @@ for notebook_type in results:
                 true_max = np.percentile(original_true, 95)  # Use 95th percentile instead of max
                 true_range = true_max - true_min if true_max != true_min else 3.0
                 pred_range = np.max(pred) - np.min(pred) if np.max(pred) != np.min(pred) else 1.0
-                print(true_range)
+                #print(true_range)
                 ma_norm = true_range / pred_range
                 pred_denorm = pred * ma_norm
                 # Shift pred_denorm to have a floor at 0
@@ -126,7 +126,7 @@ for notebook_type in results:
                 print(f"⚠️ No true data for {notebook_type} state {state}, using {'true range' if true_plotted else 'raw prediction'}")
 
         color = color_table.get((notebook_type, state), 'gray')
-        label = f"Pred State {state} ({notebook_type})"
+        label = f"Data Set {state} ({notebook_type})"
 
         plt.plot(pred_time, pred_denorm, '-', color=color, label=label)
 
@@ -139,7 +139,7 @@ plt.ylabel('Amplitude')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
-plt.savefig(FIGURE_FILENAME)
+plt.savefig(FIGURE_FILENAME, dpi=300)
 plt.show()
 
 print(f"\n✅ Figure saved as '{FIGURE_FILENAME}'")
