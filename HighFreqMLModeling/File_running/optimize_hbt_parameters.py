@@ -2,6 +2,7 @@ import os
 import time
 import uuid
 import copy
+import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -9,10 +10,10 @@ import seaborn as sns
 import papermill as pm
 from jupyter_client.kernelspec import find_kernel_specs
 import shutil
-import random 
+import random
 
 # Configuration
-POPULATION_SIZE = 40
+POPULATION_SIZE = 40  # Change to 100 if that's your intended size
 GENERATIONS = 10
 TOP_PERCENT = 0.125
 MUTATION_RATE = 0.1
@@ -75,15 +76,27 @@ def generate_individual():
 def validate_individual(individual):
     return individual['state'] in RESERVED_SHOTS and individual['reserved_shot'] in RESERVED_SHOTS[individual['state']]
 
-def construct_paths(individual, run_dir):
+def construct_paths(individual, run_dir, existing_ids):
     individual_dir = os.path.join(run_dir, f"individual_{individual['id']}")
+    # Check for ID conflict
+    if individual['id'] in existing_ids and os.path.exists(individual_dir):
+        print(f"ID conflict detected for {individual['id']}. Generating new ID.")
+        individual['id'] = str(uuid.uuid4())
+        individual_dir = os.path.join(run_dir, f"individual_{individual['id']}")
+    os.makedirs(individual_dir, exist_ok=True)
     base = f"results_{individual['notebook_type']}_state_{individual['state']}_ma2"
+    initial_input_nb = f"{individual['notebook_type']}_HBT_analysis.ipynb"
+    initial_output_nb = os.path.join(individual_dir, f"{individual['id']}_output.ipynb")
+    initial_path_true = os.path.join(individual_dir, f"{base}_true.npy")
+    initial_path_pred = os.path.join(individual_dir, f"{base}_pred.npy")
+    params_path = os.path.join(individual_dir, "parameters.json")
     return (
-        f"{individual['notebook_type']}_HBT_analysis.ipynb",
-        os.path.join(individual_dir, f"{individual['id']}_output.ipynb"),
-        os.path.join(individual_dir, f"{base}_true.npy"),
-        os.path.join(individual_dir, f"{base}_pred.npy"),
-        individual_dir
+        initial_input_nb,
+        initial_output_nb,
+        initial_path_true,
+        initial_path_pred,
+        individual_dir,
+        params_path
     )
 
 def prepare_parameters(individual):
@@ -108,16 +121,19 @@ def prepare_parameters(individual):
 def execute_notebook(input_nb, output_nb, parameters, kernel_name, individual_dir):
     os.makedirs(individual_dir, exist_ok=True)
     try:
-        print(f"Executing notebook with parameters: {parameters}")
         pm.execute_notebook(
             input_path=input_nb,
             output_path=output_nb,
             parameters=parameters,
             kernel_name=kernel_name,
-            cwd=individual_dir
+            cwd=individual_dir,
+            log_output=True,
+            progress_bar=True
         )
     except pm.PapermillExecutionError as e:
-        print(f"Exception for {parameters['individual_id']}: {str(e)}")
+        print(f"Notebook execution failed for ID {parameters.get('individual_id', 'unknown')}: {e}")
+        with open(output_nb, 'r') as f:
+            print(f"Notebook output: {f.read()}")
         raise
 
 def load_result_arrays(true_path, pred_path):
@@ -129,10 +145,11 @@ def validate_result_data(true, pred, individual_id):
     if true is None or pred is None:
         print(f"Missing result files for {individual_id}")
         return False
-    if np.any(np.isnan(true)) or np.any(np.isnan(pred)) or \
-       np.any(np.isinf(true)) or np.any(np.isinf(pred)) or \
-       np.any(true < 0) or np.any(pred < 0):
-        print(f"Invalid values in data for {individual_id}")
+    if np.any(np.isnan(true)) or np.any(np.isinf(true)):
+        print(f"Invalid true values for {individual_id}: NaN={np.any(np.isnan(true))}, Inf={np.any(np.isinf(true))}")
+        return False
+    if np.any(np.isnan(pred)) or np.any(np.isinf(pred)):
+        print(f"Invalid pred values for {individual_id}: NaN={np.any(np.isnan(pred))}, Inf={np.any(np.isinf(pred))}")
         return False
     return True
 
@@ -158,31 +175,47 @@ def print_summary(individual, mape, elapsed):
           f"pool_size={individual['max_pooling_size']} "
           f"MAPE={mape:.4f}% time={elapsed:.2f}s")
 
-def evaluate_individual(individual, kernel_name, run_dir):
+def evaluate_individual(individual, kernel_name, run_dir, existing_ids):
     start = time.time()
-
     if not validate_individual(individual):
         print(f"Invalid state or shot for {individual['id']}")
         return None, None
-
-    input_nb, output_nb, path_true, path_pred, individual_dir = construct_paths(individual, run_dir)
+    input_nb, output_nb, path_true, path_pred, individual_dir, params_path = construct_paths(individual, run_dir, existing_ids)
     params = prepare_parameters(individual)
-
+    print(f"Executing notebook with parameters: {params}")
+    with open(params_path, 'w') as f:
+        json.dump(params, f, indent=4)
     try:
         if not os.path.exists(input_nb):
             print(f"Notebook not found: {input_nb}")
             return None, None
-
         execute_notebook(input_nb, output_nb, params, kernel_name, individual_dir)
-        true_data, pred_data = load_result_arrays(path_true, path_pred)
-
+        npy_files = {f: os.path.join(individual_dir, f) for f in os.listdir(individual_dir) if f.endswith('.npy')}
+        print(f"Found .npy files in {individual_dir}: {list(npy_files.keys())}")
+        true_file = None
+        pred_file = None
+        for name, path in npy_files.items():
+            if 'true' in name.lower():
+                true_file = path
+            elif 'pred' in name.lower():
+                pred_file = path
+        if true_file is None or pred_file is None:
+            print(f"Missing true or pred file in {individual_dir}: true={true_file}, pred={pred_file}")
+            return None, None
+        base_name = os.path.basename(true_file).replace('_true.npy', '')
+        parts = base_name.split('_')
+        notebook_type = parts[1]
+        state_idx = parts.index('state') + 1
+        state = int(parts[state_idx]) if state_idx < len(parts) else None
+        if state is None or state != individual['state']:
+            print(f"Mismatched state in {individual_dir}: expected {individual['state']}, found {state}, file={true_file}")
+            return None, None
+        true_data, pred_data = load_result_arrays(true_file, pred_file)
         if not validate_result_data(true_data, pred_data, individual['id']):
             return None, None
-
         mape = compute_mape(true_data, pred_data)
         print_summary(individual, mape, time.time() - start)
         return None, mape
-
     except Exception as e:
         print(f"Exception for {individual['id']}: {e}")
         return None, None
@@ -195,21 +228,17 @@ def crossover(parent1, parent2):
                 'activation_func', 'loss_func', 'optimizer_func', 'outlier_cutoff',
                 'num_conv2d_layers', 'num_dense_layers']:
         child[key] = np.random.choice([parent1[key], parent2[key]])
-    
     child['max_pooling_size'] = random.choice([parent1['max_pooling_size'], parent2['max_pooling_size']])
-    
     child['conv2d_neurons'] = []
     child['conv2d_size'] = []
     for i in range(child['num_conv2d_layers']):
         p = np.random.choice([parent1, parent2])
         child['conv2d_neurons'].append(p['conv2d_neurons'][i] if i < len(p['conv2d_neurons']) else int(np.random.choice(PARAM_SPACE['conv2d_neurons'])))
         child['conv2d_size'].append(p['conv2d_size'][i] if i < len(p['conv2d_size']) else random.choice(PARAM_SPACE['conv2d_size']))
-    
     child['dense_layer_neurons'] = []
     for i in range(child['num_dense_layers']):
         p = np.random.choice([parent1, parent2])
         child['dense_layer_neurons'].append(p['dense_layer_neurons'][i] if i < len(p['dense_layer_neurons']) else int(np.random.choice(PARAM_SPACE['dense_layer_neurons'])))
-    
     child['id'] = str(uuid.uuid4())
     if child['state'] in RESERVED_SHOTS and child['reserved_shot'] not in RESERVED_SHOTS[child['state']]:
         child['reserved_shot'] = int(np.random.choice(RESERVED_SHOTS[child['state']]))
@@ -255,20 +284,23 @@ def load_previous_population(run_dir):
     csv_path = os.path.join(run_dir, CSV_FILENAME)
     if not os.path.exists(csv_path):
         print(f"No previous results found at {csv_path}. Starting fresh.")
-        return None, 0, None, float('inf'), None  # Return 5 values
-
+        return None, 0, None, float('inf'), None
     df = pd.read_csv(csv_path)
     if df.empty:
         print("Previous CSV is empty. Starting fresh.")
-        return None, 0, None, float('inf'), None  # Return 5 values
-
-    # Get the last generation
+        return None, 0, None, float('inf'), None
+    # Check for duplicate individual_ids
+    duplicate_ids = df[df['individual_id'].duplicated()]['individual_id'].tolist()
+    if duplicate_ids:
+        print(f"Warning: Duplicate individual_ids found in CSV: {duplicate_ids}. Removing duplicates.")
+        df = df.drop_duplicates(subset='individual_id', keep='last')
     last_gen = df['generation'].max()
     last_gen_df = df[df['generation'] == last_gen]
-
-    # Reconstruct population
     population = []
-    for _, row in last_gen_df.iterrows():
+    existing_ids = set(df['individual_id'])
+    top_n = max(2, int(POPULATION_SIZE * TOP_PERCENT))
+    top_individuals = last_gen_df[last_gen_df['mape'].notna()].sort_values('mape').head(top_n)
+    for _, row in top_individuals.iterrows():
         individual = {
             'notebook_type': row['notebook_type'],
             'state': int(row['state']),
@@ -281,21 +313,45 @@ def load_previous_population(run_dir):
             'outlier_cutoff': float(row['outlier_cutoff']),
             'num_conv2d_layers': int(row['num_conv2d_layers']),
             'num_dense_layers': int(row['num_dense_layers']),
-            'conv2d_neurons': eval(row['conv2d_neurons']),  # Convert string representation to list
-            'conv2d_size': eval(row['conv2d_size']),        # Convert string representation to list of tuples
+            'conv2d_neurons': eval(row['conv2d_neurons']),
+            'conv2d_size': eval(row['conv2d_size']),
             'dense_layer_neurons': eval(row['dense_layer_neurons']),
             'max_pooling_size': eval(row['max_pooling_size']),
             'id': row['individual_id']
         }
         if validate_individual(individual):
             population.append(individual)
-
-    # Ensure population size
+    for _, row in last_gen_df.iterrows():
+        if pd.notna(row['mape']) and row['individual_id'] not in [ind['id'] for ind in population]:
+            individual = {
+                'notebook_type': row['notebook_type'],
+                'state': int(row['state']),
+                'reserved_shot': int(row['reserved_shot']),
+                'epochs': int(row['epochs']),
+                'validation_split': float(row['validation_split']),
+                'activation_func': row['activation_func'],
+                'loss_func': row['loss_func'],
+                'optimizer_func': row['optimizer_func'],
+                'outlier_cutoff': float(row['outlier_cutoff']),
+                'num_conv2d_layers': int(row['num_conv2d_layers']),
+                'num_dense_layers': int(row['num_dense_layers']),
+                'conv2d_neurons': eval(row['conv2d_neurons']),
+                'conv2d_size': eval(row['conv2d_size']),
+                'dense_layer_neurons': eval(row['dense_layer_neurons']),
+                'max_pooling_size': eval(row['max_pooling_size']),
+                'id': row['individual_id']
+            }
+            if validate_individual(individual):
+                population.append(individual)
+    print(f"Loaded {len(population)} individuals for generation {last_gen + 1}, including {len(top_individuals)} top performers")
     while len(population) < POPULATION_SIZE:
         new_individual = generate_individual()
+        # Ensure new ID doesn't conflict with existing ones
+        while new_individual['id'] in existing_ids:
+            print(f"ID conflict for {new_individual['id']}. Generating new ID.")
+            new_individual['id'] = str(uuid.uuid4())
+        existing_ids.add(new_individual['id'])
         population.append(new_individual)
-
-    # Get best MAPE and parameters
     best_mape = df['mape'].min()
     best_row = df[df['mape'] == best_mape].iloc[0]
     best_params = {
@@ -317,13 +373,11 @@ def load_previous_population(run_dir):
         'id': best_row['individual_id']
     }
     best_individual_dir = os.path.join(run_dir, f"individual_{best_params['id']}")
-
     return population, last_gen, best_params, best_mape, best_individual_dir
 
 def create_analysis_plots(results_df, plot_dir):
     os.makedirs(plot_dir, exist_ok=True)
     plot_params = ['epochs', 'validation_split', 'outlier_cutoff', 'num_conv2d_layers', 'num_dense_layers']
-    
     for param in plot_params:
         plt.figure(figsize=(10, 6))
         sns.scatterplot(data=results_df, x=param, y='mape', hue='generation', palette='viridis', size='generation', sizes=(50, 200))
@@ -335,15 +389,12 @@ def create_analysis_plots(results_df, plot_dir):
         plt.close()
 
 def genetic_algorithm(run_dir=None):
-    # Create or use existing run directory
     if run_dir is None:
         timestamp = time.strftime('%Y%m%d_%H%M%S')
         run_dir = os.path.join(OUTPUT_DIR, f'run_{timestamp}')
     os.makedirs(run_dir, exist_ok=True)
     plot_dir = os.path.join(run_dir, 'plot_analysis')
     os.makedirs(plot_dir, exist_ok=True)
-
-    # Load previous population if available
     population, start_gen, best_params, best_mape, best_individual_dir = load_previous_population(run_dir)
     if population is None:
         population = [generate_individual() for _ in range(POPULATION_SIZE)]
@@ -359,25 +410,24 @@ def genetic_algorithm(run_dir=None):
     else:
         results_df = pd.read_csv(os.path.join(run_dir, CSV_FILENAME))
         print(f"Resuming from generation {start_gen} with {len(population)} individuals")
-
     mape_history = []
     if start_gen > 0:
         mape_history = [results_df[results_df['generation'] == g]['mape'].mean() for g in range(1, start_gen + 1)]
-
     kernel_name = 'conda-base-py' if 'conda-base-py' in get_available_kernels() else 'python3'
     print(f"Using kernel: {kernel_name}")
-
+    # Track existing IDs to prevent conflicts
+    existing_ids = set(results_df['individual_id']) if not results_df.empty else set()
     for generation in range(start_gen + 1, GENERATIONS + 1):
         print(f"\nGeneration {generation}/{GENERATIONS} ({time.strftime('%H:%M:%S')})")
         generation_start = time.time()
         fitness = []
-
         for i, individual in enumerate(population, 1):
             print(f"Evaluating {i}/{POPULATION_SIZE} (ID: {individual['id']})")
-            _, mape = evaluate_individual(individual, kernel_name, run_dir)
+            _, mape = evaluate_individual(individual, kernel_name, run_dir, existing_ids)
             if mape is None:
                 continue
             fitness.append({'individual': individual, 'mape': mape})
+            existing_ids.add(individual['id'])
             new_row = pd.DataFrame([{
                 'generation': generation,
                 'individual_id': individual['id'],
@@ -391,7 +441,7 @@ def genetic_algorithm(run_dir=None):
                 'optimizer_func': individual['optimizer_func'],
                 'outlier_cutoff': individual['outlier_cutoff'],
                 'num_conv2d_layers': individual['num_conv2d_layers'],
-                'num_dense_layers': individual['num_dense_layers'],
+                'num_dense_layers': int(individual['num_dense_layers']),
                 'conv2d_neurons': individual['conv2d_neurons'],
                 'conv2d_size': individual['conv2d_size'],
                 'dense_layer_neurons': individual['dense_layer_neurons'],
@@ -402,42 +452,39 @@ def genetic_algorithm(run_dir=None):
                 results_df = new_row
             else:
                 results_df = pd.concat([results_df, new_row], ignore_index=True)
-
             if mape < best_mape:
                 best_mape = mape
                 best_params = copy.deepcopy(individual)
                 best_individual_dir = os.path.join(run_dir, f"individual_{individual['id']}")
                 print(f"New best MAPE: {best_mape:.4f}%")
-
         if not fitness:
             print("No valid models. Terminating.")
             break
-
         results_df.to_csv(os.path.join(run_dir, CSV_FILENAME), index=False)
         avg_mape = np.mean([f['mape'] for f in fitness])
         mape_history.append(avg_mape)
         print(f"Generation {generation} summary: avg MAPE={avg_mape:.4f}, best so far={best_mape:.4f}, time={time.time() - generation_start:.2f}s")
-
         create_analysis_plots(results_df, plot_dir)
-
         top_n = max(2, int(POPULATION_SIZE * TOP_PERCENT))
         fitness.sort(key=lambda x: x['mape'])
         top_individuals = [f['individual'] for f in fitness[:min(top_n, len(fitness))]]
-
         if len(top_individuals) < 2:
             print(f"Only {len(top_individuals)} valid individuals. Regenerating population.")
             population = [generate_individual() for _ in range(POPULATION_SIZE)]
+            existing_ids.update([ind['id'] for ind in population])
             continue
-
         new_population = top_individuals.copy()
         while len(new_population) < POPULATION_SIZE:
             p1, p2 = np.random.choice(top_individuals, 2, replace=False)
             child = crossover(p1, p2)
             child = mutate(child)
+            # Ensure new ID doesn't conflict
+            while child['id'] in existing_ids:
+                print(f"ID conflict for {child['id']}. Generating new ID.")
+                child['id'] = str(uuid.uuid4())
+            existing_ids.add(child['id'])
             new_population.append(child)
-
         population = new_population
-
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, len(mape_history) + 1), mape_history, '-o')
     plt.xlabel('Generation')
@@ -446,7 +493,6 @@ def genetic_algorithm(run_dir=None):
     plt.grid(True)
     plt.savefig(os.path.join(plot_dir, PLOT_FILENAME))
     plt.close()
-
     if best_individual_dir:
         best_link = os.path.join(run_dir, 'best_individual')
         try:
@@ -462,7 +508,6 @@ def genetic_algorithm(run_dir=None):
                 shutil.rmtree(best_link)
             shutil.copytree(best_individual_dir, best_link)
             print(f"Copied best individual directory to: {best_link}")
-
     print(f"\nOptimization complete. Best MAPE: {best_mape:.2f}%")
     print(f"Best Parameters: {best_params}")
     print(f"All run files (individuals, CSV, plots) saved in: {run_dir}")
@@ -471,6 +516,5 @@ def genetic_algorithm(run_dir=None):
     return best_params, best_mape
 
 if __name__ == "__main__":
-    # Example: Specify the run directory to resume (replace with your actual run directory)
-    run_dir = None #'optimization_results/run_20250803_232855'  # Set to 'optimization_results/run_YYYYMMDD_HHMMSS' to resume a specific run
+    run_dir = 'optimization_results/run_20250804_150431'
     best_params, best_mape = genetic_algorithm(run_dir)

@@ -1,0 +1,40 @@
+{
+    "state": 1,
+    "selected_data_type": "ma2",
+    "RESERVED_SHOT": 119671,
+    "EPOCH_NUM": 50,
+    "VALIDATION_SPLIT": 0.1,
+    "ACTIVATION_FUNC": "sigmoid",
+    "LOSS_FUNC": "mse",
+    "OPTIMIZER_FUNC": "rmsprop",
+    "OUTLIER_CUTOFF": 82.0,
+    "NUM_CONV2D_LAYERS": 3,
+    "NUM_DENSE_LAYERS": 2,
+    "CONV2D_NEURONS": [
+        8,
+        32,
+        8
+    ],
+    "CONV2D_SIZE": [
+        [
+            4,
+            4
+        ],
+        [
+            3,
+            3
+        ],
+        [
+            7,
+            7
+        ]
+    ],
+    "DENSE_LAYER_NEURONS": [
+        32,
+        32
+    ],
+    "MAX_POOLING_SIZE": [
+        4,
+        4
+    ]
+}

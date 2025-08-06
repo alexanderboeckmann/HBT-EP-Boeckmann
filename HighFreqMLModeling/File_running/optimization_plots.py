@@ -30,11 +30,21 @@ def create_analysis_plots(csv_path, plot_dir):
     # Generate scatter plots for each parameter vs MAPE
     for param in plot_params:
         plt.figure(figsize=(10, 6))
-        sns.scatterplot(data=results_df, x=param, y='mape', hue='generation', palette='viridis', size='generation', sizes=(50, 200))
+        sns.scatterplot(
+            data=results_df,
+            x=param,
+            y='mape',
+            hue='generation',
+            palette='cividis_r',
+            size='generation',
+            sizes = (200, 50),  # Older generations get larger points,
+            alpha=0.6  # Add transparency to make overlapping points visible
+        )
         plt.xlabel(param.replace('_', ' ').title())
         plt.ylabel('MAPE (%)')
         plt.title(f'MAPE vs {param.replace("_", " ").title()} by Generation')
         plt.grid(True)
+        plt.legend(loc='upper left')  # Place legend in top-left corner
         plt.savefig(os.path.join(plot_dir, f'mape_vs_{param}.png'))
         plt.close()
 
@@ -50,7 +60,6 @@ def create_analysis_plots(csv_path, plot_dir):
     plt.close()
 
     print(f"Plots saved in: {plot_dir}")
-
 def find_valid_run_dir(output_dir):
     """Find the most recent run directory with a valid CSV file."""
     run_dirs = [d for d in os.listdir(output_dir) if d.startswith('run_') and os.path.isdir(os.path.join(output_dir, d))]
