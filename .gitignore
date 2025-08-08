@@ -1,0 +1,10 @@
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Other common ignores
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.log
