@@ -28,7 +28,7 @@ DENSE_LAYER_NEURONS = None
 MAX_POOLING_SIZE = None
 
 # Manual override logic
-manual = True  # Toggle this to True to use manual values, False to skip
+manual = False  # Toggle this to True to use manual values, False to skip
 
 if manual:
     state = 2  # state 1, 2, or 3
