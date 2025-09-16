@@ -86,15 +86,15 @@ def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Process camera frames for a shot.")
     parser.add_argument('--data-dir', default=project_path('data', 'shots'), help='Base directory for shot data (default: data/shots)')
-    parser.add_argument('--shot', type=int, default=114451, help='Shot number (default: 114451)')
-    parser.add_argument('--shot-type', choices=['old', 'new'], default='old', help='Shot type: old or new (default: old)')
+    parser.add_argument('--shot', type=int, default=119671, help='Shot number (default: 119671)')
+    parser.add_argument('--shot-type', choices=['old', 'new'], default='new', help='Shot type: old or new (default: new)')
     parser.add_argument('--output-dir', default=project_path('outputs'), help='Directory for output PNG (default: outputs)')
     args = parser.parse_args()
 
     # Construct paths
     data_dir = Path(args.data_dir) / args.shot_type / str(args.shot) / 'CAM-26731'
     tiff_dir = data_dir / 'tiff'
-    time_file = data_dir.parent / 'time.npy'
+    time_file = Path(args.data_dir) / args.shot_type / f'{args.shot}time.npy'
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
