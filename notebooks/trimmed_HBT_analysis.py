@@ -1,6 +1,23 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+"""
+Trimmed HBT Analysis Script
+
+This script performs analysis on trimmed plasma data.
+It trains a convolutional neural network to predict plasma parameters from camera images
+using data that has been preprocessed to remove noise and outliers.
+
+Key features:
+- Loads trimmed plasma shot data from camera images
+- Trains CNN models with configurable architecture
+- Supports multiple plasma states (1, 2, 3) with different reserved shots
+- Saves predictions and model results for comparison
+- Can be run standalone or via command-line arguments
+
+The "trimmed" version uses cleaned data with outlier removal and preprocessing.
+"""
+
 import tensorflow as tf
 from tensorflow import keras
 import numpy as np
@@ -9,6 +26,8 @@ import glob
 import random
 import ast
 from PIL import Image
+from pathlib import Path
+import argparse
 
 # Parameters
 state = None
@@ -27,64 +46,109 @@ CONV2D_SIZE = None
 DENSE_LAYER_NEURONS = None
 MAX_POOLING_SIZE = None
 
-# Manual override logic
-manual = False  # Toggle this to True to use manual values, False to skip
+# Command-line argument parsing
+parser = argparse.ArgumentParser(description='HBT Analysis Script')
+parser.add_argument('--state', type=int, help='State number (1, 2, or 3)')
+parser.add_argument('--selected_data_type', type=str, default='ma2', help='Data type (default: ma2)')
+parser.add_argument('--RESERVED_SHOT', type=int, help='Reserved shot number')
+parser.add_argument('--EPOCH_NUM', type=int, default=15, help='Number of epochs (default: 15)')
+parser.add_argument('--VALIDATION_SPLIT', type=float, default=0.2, help='Validation split (default: 0.2)')
+parser.add_argument('--ACTIVATION_FUNC', type=str, default='relu', help='Activation function (default: relu)')
+parser.add_argument('--LOSS_FUNC', type=str, default='mae', help='Loss function (default: mae)')
+parser.add_argument('--OPTIMIZER_FUNC', type=str, default='adam', help='Optimizer function (default: adam)')
+parser.add_argument('--OUTLIER_CUTOFF', type=float, default=99, help='Outlier cutoff percentile (default: 99)')
+parser.add_argument('--NUM_CONV2D_LAYERS', type=int, default=3, help='Number of Conv2D layers (default: 3)')
+parser.add_argument('--NUM_DENSE_LAYERS', type=int, default=2, help='Number of dense layers (default: 2)')
+parser.add_argument('--CONV2D_NEURONS', type=str, default='[32, 32, 16]', help='Conv2D neurons as JSON list (default: [32, 32, 16])')
+parser.add_argument('--CONV2D_SIZE', type=str, default='[(8, 8), (8, 8), (4, 4)]', help='Conv2D sizes as JSON list (default: [(8, 8), (8, 8), (4, 4)])')
+parser.add_argument('--DENSE_LAYER_NEURONS', type=str, default='[64, 32]', help='Dense layer neurons as JSON list (default: [64, 32])')
+parser.add_argument('--MAX_POOLING_SIZE', type=str, default='(2, 2)', help='Max pooling size as JSON tuple (default: (2, 2))')
 
-if manual:
-    state = 2  # state 1, 2, or 3
-    selected_data_type = 'ma2'  # ma2 basically always
-    if state == 1:
-        RESERVED_SHOT = 119671  # for state 1
-    elif state == 2:
-        RESERVED_SHOT = 114458  # for state 2
-    else:
-        RESERVED_SHOT = 119671  # Default for state 3
-    EPOCH_NUM = 15
-    VALIDATION_SPLIT = 0.2
-    ACTIVATION_FUNC = 'relu'
-    LOSS_FUNC = 'mae'
-    OPTIMIZER_FUNC = 'adam'
-    OUTLIER_CUTOFF = 99
-    NUM_CONV2D_LAYERS = 3
-    NUM_DENSE_LAYERS = 2
-    CONV2D_NEURONS = [32, 32, 16]
-    CONV2D_SIZE = [(8, 8), (8, 8), (4, 4)]
-    DENSE_LAYER_NEURONS = [64, 32]
-    MAX_POOLING_SIZE = (2, 2)
+args = parser.parse_args()
 
-    parameters = {
-        'state': state,
-        'selected_data_type': selected_data_type,
-        'RESERVED_SHOT': RESERVED_SHOT,
-        'EPOCH_NUM': EPOCH_NUM,
-        'VALIDATION_SPLIT': VALIDATION_SPLIT,
-        'ACTIVATION_FUNC': ACTIVATION_FUNC,
-        'LOSS_FUNC': LOSS_FUNC,
-        'OPTIMIZER_FUNC': OPTIMIZER_FUNC,
-        'OUTLIER_CUTOFF': OUTLIER_CUTOFF,
-        'NUM_CONV2D_LAYERS': NUM_CONV2D_LAYERS,
-        'NUM_DENSE_LAYERS': NUM_DENSE_LAYERS,
-        'CONV2D_NEURONS': CONV2D_NEURONS,
-        'CONV2D_SIZE': CONV2D_SIZE,
-        'DENSE_LAYER_NEURONS': DENSE_LAYER_NEURONS,
-        'MAX_POOLING_SIZE': MAX_POOLING_SIZE
-    }
+# Use command-line arguments if provided, otherwise use manual override
+if args.state is not None:
+    # Use command-line arguments
+    state = args.state
+    selected_data_type = args.selected_data_type
+    RESERVED_SHOT = args.RESERVED_SHOT
+    EPOCH_NUM = args.EPOCH_NUM
+    VALIDATION_SPLIT = args.VALIDATION_SPLIT
+    ACTIVATION_FUNC = args.ACTIVATION_FUNC
+    LOSS_FUNC = args.LOSS_FUNC
+    OPTIMIZER_FUNC = args.OPTIMIZER_FUNC
+    OUTLIER_CUTOFF = args.OUTLIER_CUTOFF
+    NUM_CONV2D_LAYERS = args.NUM_CONV2D_LAYERS
+    NUM_DENSE_LAYERS = args.NUM_DENSE_LAYERS
+    CONV2D_NEURONS = ast.literal_eval(args.CONV2D_NEURONS)
+    CONV2D_SIZE = ast.literal_eval(args.CONV2D_SIZE)
+    DENSE_LAYER_NEURONS = ast.literal_eval(args.DENSE_LAYER_NEURONS)
+    MAX_POOLING_SIZE = ast.literal_eval(args.MAX_POOLING_SIZE)
+    
+    # Set RESERVED_SHOT based on state if not provided
+    if RESERVED_SHOT is None:
+        if state == 1:
+            RESERVED_SHOT = 119671
+        elif state == 2:
+            RESERVED_SHOT = 114458
+        else:
+            RESERVED_SHOT = 119671
+else:
+    # Manual override logic - toggle this to True to use manual values
+    manual = False
+    
+    if manual:
+        state = 2  # state 1, 2, or 3
+        selected_data_type = 'ma2'  # ma2 basically always
+        if state == 1:
+            RESERVED_SHOT = 119671  # for state 1
+        elif state == 2:
+            RESERVED_SHOT = 114458  # for state 2
+        else:
+            RESERVED_SHOT = 119671  # Default for state 3
+        EPOCH_NUM = 15
+        VALIDATION_SPLIT = 0.2
+        ACTIVATION_FUNC = 'relu'
+        LOSS_FUNC = 'mae'
+        OPTIMIZER_FUNC = 'adam'
+        OUTLIER_CUTOFF = 99
+        NUM_CONV2D_LAYERS = 3
+        NUM_DENSE_LAYERS = 2
+        CONV2D_NEURONS = [32, 32, 16]
+        CONV2D_SIZE = [(8, 8), (8, 8), (4, 4)]
+        DENSE_LAYER_NEURONS = [64, 32]
+        MAX_POOLING_SIZE = (2, 2)
+
 
 # Define shot lists and paths
 SHOT_PATHS = {
     'new_shots': {
         'range': (119591, 119769),
-        'data_path': 'data/shots/new/',
-        'hbt_path': 'data/shots/new/',
-        'ip_path': 'data/shots/new/'
+        'data_path': None,
+        'hbt_path': None,
+        'ip_path': None
     },
     'old_shots': {
         'range': (114407, 114473),
-        'data_path': 'data/shots/old/',
-        'hbt_path': 'data/shots/old/',
-        'ip_path': 'data/shots/old/'
+        'data_path': None,
+        'hbt_path': None,
+        'ip_path': None
     }
 }
+
+# Centralized project root and path utilities
+PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
+
+# Initialize absolute paths in SHOT_PATHS
+SHOT_PATHS['new_shots']['data_path'] = project_path('data', 'shots', 'new')
+SHOT_PATHS['new_shots']['hbt_path'] = project_path('data', 'shots', 'new')
+SHOT_PATHS['new_shots']['ip_path'] = project_path('data', 'shots', 'new')
+SHOT_PATHS['old_shots']['data_path'] = project_path('data', 'shots', 'old')
+SHOT_PATHS['old_shots']['hbt_path'] = project_path('data', 'shots', 'old')
+SHOT_PATHS['old_shots']['ip_path'] = project_path('data', 'shots', 'old')
 
 if state == 1:
     shot_list = [119591, 119599, 119601, 119646, 119648, 119653, 119654, 119658, 119659,
@@ -120,7 +184,7 @@ def get_paths_for_shot(shot_num):
     raise ValueError(f"Shot number {shot_num} is not in the defined ranges.")
 
 # Load raw HBT ma2 and time data (flat filenames)
-hbt_path = 'data/shots/old/'
+hbt_path = project_path('data', 'shots', 'old')
 shot = 114458
 ma2_data = np.load(os.path.join(hbt_path, f'{shot}m2Amp.npy'))
 time_data = np.load(os.path.join(hbt_path, f'{shot}time.npy'))
@@ -243,7 +307,7 @@ def process_all_shots(shot_list, initial_cutoff_indices, end_cutoff_indices, fra
         if shot == RESERVED_SHOT:
             continue
         data_path, _, _ = get_paths_for_shot(shot)
-        folder_path = os.path.join(data_path, str(shot), 'CAM-26731/tiff/')
+        folder_path = os.path.join(data_path, str(shot), 'CAM-26731', 'tiff')
         try:
             shot_2d, cut_2d, flat_data, actual_frames = process_shot_data(
                 folder_path, initial_cutoff_indices[i], end_cutoff_indices[i]
@@ -274,7 +338,7 @@ reserved_shot_frame_count = None
 if RESERVED_SHOT is not None:
     shot_idx = shot_list.index(RESERVED_SHOT)
     data_path, _, _ = get_paths_for_shot(RESERVED_SHOT)
-    folder_path = os.path.join(data_path, str(RESERVED_SHOT), 'Cam-26731/tiff/')
+    folder_path = os.path.join(data_path, str(RESERVED_SHOT), 'CAM-26731', 'tiff')
     
     print(f"RESERVED_SHOT {RESERVED_SHOT}: initial_cutoff={initial_cutoff_indices[shot_idx]}, end_cutoff={end_cutoff_indices[shot_idx]}")
     
@@ -297,7 +361,7 @@ if RESERVED_SHOT is None:
     print(f"Randomly selected reserved shot: {RESERVED_SHOT}")
     shot_idx = shot_list.index(RESERVED_SHOT)
     data_path, _, _ = get_paths_for_shot(RESERVED_SHOT)
-    folder_path = os.path.join(data_path, str(RESERVED_SHOT), 'Cam-26731/tiff/')
+    folder_path = os.path.join(data_path, str(RESERVED_SHOT), 'CAM-26731', 'tiff')
     shot_2d, cut_2d, flat_data, actual_frames = process_shot_data(
         folder_path, initial_cutoff_indices[shot_idx], end_cutoff_indices[shot_idx]
     )
@@ -462,7 +526,7 @@ training_vector = training_vector[:-test_size]
 target_vector = target_vector[:-test_size]
 
 # Save normalization in data/predictions
-pred_dir_npz = os.path.join('data', 'predictions')
+pred_dir_npz = project_path('data', 'predictions')
 os.makedirs(pred_dir_npz, exist_ok=True)
 normalization_filename = os.path.join(pred_dir_npz, f"normalization_{notebook_type}_state_{state}.npz")
 np.savez(normalization_filename,
@@ -579,7 +643,7 @@ print(f"Predictions defined: {'predictions' in locals()}, shape: {reserved_predi
 print(f"Time data defined: {'reserved_shot_time' in locals()}, shape: {time_data.shape if 'time_data' in locals() else 'N/A'}")
 
 # Ensure predictions directory exists and save results under data/predictions
-pred_dir = os.path.join('data', 'predictions')
+pred_dir = project_path('data', 'predictions')
 os.makedirs(pred_dir, exist_ok=True)
 np.save(os.path.join(pred_dir, f'results_{notebook_type}_state_{state}_{selected_data_type}_true.npy'), reserved_shot_hbt[:, 0])
 np.save(os.path.join(pred_dir, f'results_{notebook_type}_state_{state}_{selected_data_type}_pred.npy'), reserved_predictions)

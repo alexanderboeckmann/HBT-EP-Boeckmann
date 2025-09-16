@@ -1,3 +1,19 @@
+"""
+HBT Parameter Optimization Script
+
+This script implements a genetic algorithm to optimize hyperparameters for HBT
+neural network models. It searches through a parameter space including model architecture, training parameters,
+and data processing settings to find configurations that minimize prediction error (MAPE).
+
+The optimization process:
+1. Generates a population of random parameter combinations
+2. Evaluates each individual by training and testing HBT models
+3. Selects top performers and creates new generations through crossover/mutation
+4. Tracks progress and saves results for analysis
+
+Supports both trimmed and untrimmed data analysis across different plasma states.
+"""
+
 import os
 import time
 import uuid
@@ -7,17 +23,23 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import papermill as pm
-from jupyter_client.kernelspec import find_kernel_specs
+import subprocess
 import shutil
 import random
+from pathlib import Path
+
+# Centralized project root and path utilities
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
 
 # Configuration
 POPULATION_SIZE = 40  # Change to 100 if that's your intended size
 GENERATIONS = 10
 TOP_PERCENT = 0.125
 MUTATION_RATE = 0.1
-OUTPUT_DIR = 'optimization_results'
+OUTPUT_DIR = project_path('data', 'optimization_results')
 CSV_FILENAME = 'hbt_optimization_results.csv'
 PLOT_FILENAME = 'hbt_optimization_progress.png'
 
@@ -46,8 +68,6 @@ RESERVED_SHOTS = {
     3: [119671, 114458]
 }
 
-def get_available_kernels():
-    return find_kernel_specs().keys()
 
 def generate_individual():
     state = int(np.random.choice(PARAM_SPACE['state']))
@@ -85,7 +105,7 @@ def construct_paths(individual, run_dir, existing_ids):
         individual_dir = os.path.join(run_dir, f"individual_{individual['id']}")
     os.makedirs(individual_dir, exist_ok=True)
     base = f"results_{individual['notebook_type']}_state_{individual['state']}_ma2"
-    initial_input_nb = f"{individual['notebook_type']}_HBT_analysis.ipynb"
+    initial_input_nb = project_path('notebooks', f"{individual['notebook_type']}_HBT_analysis.py")
     initial_output_nb = os.path.join(individual_dir, f"{individual['id']}_output.ipynb")
     initial_path_true = os.path.join(individual_dir, f"{base}_true.npy")
     initial_path_pred = os.path.join(individual_dir, f"{base}_pred.npy")
@@ -118,22 +138,35 @@ def prepare_parameters(individual):
         'MAX_POOLING_SIZE': individual['max_pooling_size']
     }
 
-def execute_notebook(input_nb, output_nb, parameters, kernel_name, individual_dir):
+def execute_script(input_script, parameters, individual_dir):
     os.makedirs(individual_dir, exist_ok=True)
     try:
-        pm.execute_notebook(
-            input_path=input_nb,
-            output_path=output_nb,
-            parameters=parameters,
-            kernel_name=kernel_name,
+        # Build command line arguments from parameters
+        cmd = ['python', input_script]
+        for key, value in parameters.items():
+            if key != 'individual_id':  # Skip internal parameter
+                cmd.extend([f'--{key}', str(value)])
+        
+        # Execute the script
+        result = subprocess.run(
+            cmd,
             cwd=individual_dir,
-            log_output=True,
-            progress_bar=True
+            capture_output=True,
+            text=True,
+            timeout=3600  # 1 hour timeout
         )
-    except pm.PapermillExecutionError as e:
-        print(f"Notebook execution failed for ID {parameters.get('individual_id', 'unknown')}: {e}")
-        with open(output_nb, 'r') as f:
-            print(f"Notebook output: {f.read()}")
+        
+        if result.returncode != 0:
+            print(f"Script execution failed for ID {parameters.get('individual_id', 'unknown')}: {result.stderr}")
+            raise RuntimeError(f"Script execution failed: {result.stderr}")
+        else:
+            print(f"Successfully executed script for ID {parameters.get('individual_id', 'unknown')}")
+            
+    except subprocess.TimeoutExpired:
+        print(f"Script execution timed out for ID {parameters.get('individual_id', 'unknown')}")
+        raise
+    except Exception as e:
+        print(f"Script execution failed for ID {parameters.get('individual_id', 'unknown')}: {e}")
         raise
 
 def load_result_arrays(true_path, pred_path):
@@ -175,7 +208,7 @@ def print_summary(individual, mape, elapsed):
           f"pool_size={individual['max_pooling_size']} "
           f"MAPE={mape:.4f}% time={elapsed:.2f}s")
 
-def evaluate_individual(individual, kernel_name, run_dir, existing_ids):
+def evaluate_individual(individual, run_dir, existing_ids):
     start = time.time()
     if not validate_individual(individual):
         print(f"Invalid state or shot for {individual['id']}")
@@ -189,7 +222,7 @@ def evaluate_individual(individual, kernel_name, run_dir, existing_ids):
         if not os.path.exists(input_nb):
             print(f"Notebook not found: {input_nb}")
             return None, None
-        execute_notebook(input_nb, output_nb, params, kernel_name, individual_dir)
+        execute_script(input_nb, params, individual_dir)
         npy_files = {f: os.path.join(individual_dir, f) for f in os.listdir(individual_dir) if f.endswith('.npy')}
         print(f"Found .npy files in {individual_dir}: {list(npy_files.keys())}")
         true_file = None
@@ -413,8 +446,6 @@ def genetic_algorithm(run_dir=None):
     mape_history = []
     if start_gen > 0:
         mape_history = [results_df[results_df['generation'] == g]['mape'].mean() for g in range(1, start_gen + 1)]
-    kernel_name = 'conda-base-py' if 'conda-base-py' in get_available_kernels() else 'python3'
-    print(f"Using kernel: {kernel_name}")
     # Track existing IDs to prevent conflicts
     existing_ids = set(results_df['individual_id']) if not results_df.empty else set()
     for generation in range(start_gen + 1, GENERATIONS + 1):
@@ -423,7 +454,7 @@ def genetic_algorithm(run_dir=None):
         fitness = []
         for i, individual in enumerate(population, 1):
             print(f"Evaluating {i}/{POPULATION_SIZE} (ID: {individual['id']})")
-            _, mape = evaluate_individual(individual, kernel_name, run_dir, existing_ids)
+            _, mape = evaluate_individual(individual, run_dir, existing_ids)
             if mape is None:
                 continue
             fitness.append({'individual': individual, 'mape': mape})
@@ -516,5 +547,5 @@ def genetic_algorithm(run_dir=None):
     return best_params, best_mape
 
 if __name__ == "__main__":
-    run_dir = 'optimization_results/run_20250804_150431'
+    run_dir = project_path('data', 'optimization_results', 'run_20250804_150431')
     best_params, best_mape = genetic_algorithm(run_dir)

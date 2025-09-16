@@ -1,6 +1,21 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+"""
+Camera Frame Finder Script
+
+This script helps locate and visualize specific camera frames from plasma shot data.
+It searches through shot directories to find and display camera images, useful for
+data exploration and debugging HBT analysis workflows.
+
+Features:
+- Searches through shot data directories for camera frames
+- Displays found frames with metadata
+- Supports both old and new shot data formats
+- Generates visualization outputs for frame inspection
+- Helps identify data quality and availability issues
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import os
@@ -13,6 +28,12 @@ import logging
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Centralized project root and path utilities
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
 
 # Parameters
 CAMERA_DEPTH = 65535.0  # 2^16
@@ -64,10 +85,10 @@ def process_shot_data(folder_path, initial_cutoff, end_cutoff, max_pixel_value=C
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Process camera frames for a shot.")
-    parser.add_argument('--data-dir', default='data/shots', help='Base directory for shot data (default: data/shots)')
+    parser.add_argument('--data-dir', default=project_path('data', 'shots'), help='Base directory for shot data (default: data/shots)')
     parser.add_argument('--shot', type=int, default=114451, help='Shot number (default: 114451)')
     parser.add_argument('--shot-type', choices=['old', 'new'], default='old', help='Shot type: old or new (default: old)')
-    parser.add_argument('--output-dir', default='outputs', help='Directory for output PNG (default: outputs)')
+    parser.add_argument('--output-dir', default=project_path('outputs'), help='Directory for output PNG (default: outputs)')
     args = parser.parse_args()
 
     # Construct paths

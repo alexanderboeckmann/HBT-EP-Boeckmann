@@ -1,6 +1,24 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+"""
+Trimmed HBT Analysis Crossover Script
+
+This script performs analysis on trimmed plasma data
+with crossover validation methodology. It trains CNN models using a specific data splitting
+approach where different states are used for training and testing.
+
+Key features:
+- Uses trimmed (preprocessed) plasma data
+- Implements crossover validation between different plasma states
+- Trains models on one state and tests on another
+- Supports configurable model architecture and training parameters
+- Saves results for genetic algorithm optimization
+
+This version is specifically designed for parameter optimization workflows
+where different state combinations are tested systematically.
+"""
+
 import tensorflow as tf
 from tensorflow import keras
 import numpy as np
@@ -10,6 +28,8 @@ from PIL import Image
 import glob
 import random
 import ast
+from pathlib import Path
+import argparse
 
 # Parameters
 state = None
@@ -28,48 +48,79 @@ CONV2D_SIZE = None
 DENSE_LAYER_NEURONS = None
 MAX_POOLING_SIZE = None
 
-# Manual override logic
-manual = False  # Toggle this to True to use manual values, False to skip
+# Command-line argument parsing
+parser = argparse.ArgumentParser(description='HBT Analysis Crossover Script')
+parser.add_argument('--state', type=int, help='State number (1, 2, or 3)')
+parser.add_argument('--selected_data_type', type=str, default='ma2', help='Data type (default: ma2)')
+parser.add_argument('--RESERVED_SHOT', type=int, help='Reserved shot number')
+parser.add_argument('--EPOCH_NUM', type=int, default=15, help='Number of epochs (default: 15)')
+parser.add_argument('--VALIDATION_SPLIT', type=float, default=0.2, help='Validation split (default: 0.2)')
+parser.add_argument('--ACTIVATION_FUNC', type=str, default='relu', help='Activation function (default: relu)')
+parser.add_argument('--LOSS_FUNC', type=str, default='mae', help='Loss function (default: mae)')
+parser.add_argument('--OPTIMIZER_FUNC', type=str, default='adam', help='Optimizer function (default: adam)')
+parser.add_argument('--OUTLIER_CUTOFF', type=float, default=99, help='Outlier cutoff percentile (default: 99)')
+parser.add_argument('--NUM_CONV2D_LAYERS', type=int, default=3, help='Number of Conv2D layers (default: 3)')
+parser.add_argument('--NUM_DENSE_LAYERS', type=int, default=2, help='Number of dense layers (default: 2)')
+parser.add_argument('--CONV2D_NEURONS', type=str, default='[32, 32, 16]', help='Conv2D neurons as JSON list (default: [32, 32, 16])')
+parser.add_argument('--CONV2D_SIZE', type=str, default='[(8, 8), (8, 8), (4, 4)]', help='Conv2D sizes as JSON list (default: [(8, 8), (8, 8), (4, 4)])')
+parser.add_argument('--DENSE_LAYER_NEURONS', type=str, default='[64, 32]', help='Dense layer neurons as JSON list (default: [64, 32])')
+parser.add_argument('--MAX_POOLING_SIZE', type=str, default='(2, 2)', help='Max pooling size as JSON tuple (default: (2, 2))')
 
-if manual:
-    state = 1  # state 1, 2, or 3
-    selected_data_type = 'ma2'  # ma2 basically always
-    if state == 1:
-        RESERVED_SHOT = 119671  # for state 1
-    elif state == 2:
-        RESERVED_SHOT = 114458  # for state 2
-    else:
-        RESERVED_SHOT = 119671  # Default for state 3
-    EPOCH_NUM = 15
-    VALIDATION_SPLIT = 0.2
-    ACTIVATION_FUNC = 'relu'
-    LOSS_FUNC = 'mae'
-    OPTIMIZER_FUNC = 'adam'
-    OUTLIER_CUTOFF = 99
-    NUM_CONV2D_LAYERS = 3
-    NUM_DENSE_LAYERS = 2
-    CONV2D_NEURONS = [32, 32, 16]
-    CONV2D_SIZE = [(8, 8), (8, 8), (4, 4)]
-    DENSE_LAYER_NEURONS = [64, 32]
-    MAX_POOLING_SIZE = (2, 2)
+args = parser.parse_args()
 
-    parameters = {
-        'state': state,
-        'selected_data_type': selected_data_type,
-        'RESERVED_SHOT': RESERVED_SHOT,
-        'EPOCH_NUM': EPOCH_NUM,
-        'VALIDATION_SPLIT': VALIDATION_SPLIT,
-        'ACTIVATION_FUNC': ACTIVATION_FUNC,
-        'LOSS_FUNC': LOSS_FUNC,
-        'OPTIMIZER_FUNC': OPTIMIZER_FUNC,
-        'OUTLIER_CUTOFF': OUTLIER_CUTOFF,
-        'NUM_CONV2D_LAYERS': NUM_CONV2D_LAYERS,
-        'NUM_DENSE_LAYERS': NUM_DENSE_LAYERS,
-        'CONV2D_NEURONS': CONV2D_NEURONS,
-        'CONV2D_SIZE': CONV2D_SIZE,
-        'DENSE_LAYER_NEURONS': DENSE_LAYER_NEURONS,
-        'MAX_POOLING_SIZE': MAX_POOLING_SIZE
-    }
+# Use command-line arguments if provided, otherwise use manual override
+if args.state is not None:
+    # Use command-line arguments
+    state = args.state
+    selected_data_type = args.selected_data_type
+    RESERVED_SHOT = args.RESERVED_SHOT
+    EPOCH_NUM = args.EPOCH_NUM
+    VALIDATION_SPLIT = args.VALIDATION_SPLIT
+    ACTIVATION_FUNC = args.ACTIVATION_FUNC
+    LOSS_FUNC = args.LOSS_FUNC
+    OPTIMIZER_FUNC = args.OPTIMIZER_FUNC
+    OUTLIER_CUTOFF = args.OUTLIER_CUTOFF
+    NUM_CONV2D_LAYERS = args.NUM_CONV2D_LAYERS
+    NUM_DENSE_LAYERS = args.NUM_DENSE_LAYERS
+    CONV2D_NEURONS = ast.literal_eval(args.CONV2D_NEURONS)
+    CONV2D_SIZE = ast.literal_eval(args.CONV2D_SIZE)
+    DENSE_LAYER_NEURONS = ast.literal_eval(args.DENSE_LAYER_NEURONS)
+    MAX_POOLING_SIZE = ast.literal_eval(args.MAX_POOLING_SIZE)
+    
+    # Set RESERVED_SHOT based on state if not provided
+    if RESERVED_SHOT is None:
+        if state == 1:
+            RESERVED_SHOT = 119671
+        elif state == 2:
+            RESERVED_SHOT = 114458
+        else:
+            RESERVED_SHOT = 119671
+else:
+    # Manual override logic - toggle this to True to use manual values
+    manual = False
+    
+    if manual:
+        state = 1  # state 1, 2, or 3
+        selected_data_type = 'ma2'  # ma2 basically always
+        if state == 1:
+            RESERVED_SHOT = 119671  # for state 1
+        elif state == 2:
+            RESERVED_SHOT = 114458  # for state 2
+        else:
+            RESERVED_SHOT = 119671  # Default for state 3
+        EPOCH_NUM = 15
+        VALIDATION_SPLIT = 0.2
+        ACTIVATION_FUNC = 'relu'
+        LOSS_FUNC = 'mae'
+        OPTIMIZER_FUNC = 'adam'
+        OUTLIER_CUTOFF = 99
+        NUM_CONV2D_LAYERS = 3
+        NUM_DENSE_LAYERS = 2
+        CONV2D_NEURONS = [32, 32, 16]
+        CONV2D_SIZE = [(8, 8), (8, 8), (4, 4)]
+        DENSE_LAYER_NEURONS = [64, 32]
+        MAX_POOLING_SIZE = (2, 2)
+
 
 # Define shot lists and paths
 SHOT_PATHS = {

@@ -1,10 +1,32 @@
+"""
+Optimization Results Visualization Script
+
+This script creates comprehensive visualization plots from genetic algorithm optimization
+results. It generates progress plots, parameter distribution charts, and performance
+analysis visualizations to help understand optimization behavior.
+
+Features:
+- Creates optimization progress plots showing MAPE over generations
+- Generates parameter distribution and correlation plots
+- Analyzes convergence patterns and performance trends
+- Produces publication-ready visualization outputs
+- Supports multiple optimization run comparisons
+"""
+
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from pathlib import Path
+
+# Centralized project root and path utilities
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
 
 # Configuration
-OUTPUT_DIR = 'optimization_results'
+OUTPUT_DIR = project_path('data', 'optimization_results')
 CSV_FILENAME = 'hbt_optimization_results.csv'
 PLOT_FILENAME = 'hbt_optimization_progress.png'
 

@@ -1,8 +1,30 @@
+"""
+Genetic vs Manual Model Comparison Script
+
+This script compares the performance of genetically optimized models against manually
+configured models for HBT prediction tasks. It loads results from both optimization
+runs and manual configurations to create comparative visualizations.
+
+Features:
+- Compares genetic algorithm optimized models vs manual parameter selection
+- Loads results from optimization directories and manual prediction files
+- Creates side-by-side comparison plots
+- Calculates and displays performance metrics (MAPE, etc.)
+- Supports both trimmed and untrimmed data analysis
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 import pandas as pd
 import argparse
+from pathlib import Path
+
+# Centralized project root and path utilities
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
 
 # ------------------------
 # Command-line arguments
@@ -10,7 +32,7 @@ import argparse
 parser = argparse.ArgumentParser(description="Plot best HBT predictions: true, manual, and genetic models.")
 parser.add_argument('--data_type', choices=['trimmed', 'untrimmed'], default='untrimmed',
                     help='Choose trimmed or untrimmed data')
-parser.add_argument('--optimization_dir', default='optimization_results',
+parser.add_argument('--optimization_dir', default=project_path('data', 'optimization_results'),
                     help='Directory containing optimization results')
 args = parser.parse_args()
 
@@ -19,7 +41,7 @@ args = parser.parse_args()
 # ------------------------
 STATES = [1]  # Only need state 1 (Data Set 1) for true and manual data
 SELECTED_DATA_TYPE = 'ma2'
-FIGURE_FILENAME = f"hbt_best_model_comparison_{args.data_type}.png"
+FIGURE_FILENAME = project_path('outputs', f"hbt_best_model_comparison_{args.data_type}.png")
 CSV_FILENAME = 'hbt_optimization_results.csv'
 
 # Initialize results dictionary
@@ -93,9 +115,9 @@ else:
 # ------------------------
 for state in STATES:
     try:
-        true_path = f'results_{args.data_type}_state_{state}_{SELECTED_DATA_TYPE}_true.npy'
-        pred_path = f'results_{args.data_type}_state_{state}_{SELECTED_DATA_TYPE}_pred.npy'
-        time_path = f'results_{args.data_type}_state_{state}_{SELECTED_DATA_TYPE}_time.npy'
+        true_path = project_path('data', 'predictions', f'results_{args.data_type}_state_{state}_{SELECTED_DATA_TYPE}_true.npy')
+        pred_path = project_path('data', 'predictions', f'results_{args.data_type}_state_{state}_{SELECTED_DATA_TYPE}_pred.npy')
+        time_path = project_path('data', 'predictions', f'results_{args.data_type}_state_{state}_{SELECTED_DATA_TYPE}_time.npy')
 
         if os.path.exists(true_path):
             results[args.data_type][state]['true'] = np.load(true_path)
@@ -117,15 +139,20 @@ plt.figure(figsize=(12, 8))
 state = 1
 true_plotted = False
 original_true = None
+reference_time = None  # Store reference time for alignment
 if results[args.data_type][state]['true'] is not None:
     true = results[args.data_type][state]['true']
     original_true = true
-    downsampled_time = results[args.data_type][state]['time']
+    true_time = results[args.data_type][state]['time']
     
-    if downsampled_time is None or len(downsampled_time) != len(true):
+    if true_time is None or len(true_time) != len(true):
         print(f"⚠️ Missing or mismatched time for TRUE data (state {state}); using indices")
-        downsampled_time = np.arange(len(true))
-    plt.plot(downsampled_time, true, '-', color='black', label='Untrimmed ma2, Data Set 1', zorder=3)
+        true_time = np.arange(len(true))
+    
+    # Store reference time for aligning other plots
+    reference_time = true_time
+    
+    plt.plot(true_time, true, '-', color='black', label='Untrimmed ma2, Data Set 1', zorder=3)
     
     # Store scale for prediction normalization
     y_min, y_max = np.min(true), np.max(true)
@@ -144,6 +171,21 @@ if results[args.data_type][state]['pred'] is not None:
         print(f"⚠️ Missing or mismatched time for manual model (state {state}); using indices")
         pred_time = np.arange(len(pred))
     
+    # Align time arrays with reference time if available
+    if reference_time is not None and pred_time is not None:
+        # Scale prediction time to match reference time range
+        if len(pred_time) == len(reference_time):
+            # If same length, use reference time directly for proper alignment
+            pred_time = reference_time
+        else:
+            # Scale to match reference time range
+            ref_min, ref_max = reference_time[0], reference_time[-1]
+            pred_min, pred_max = pred_time[0], pred_time[-1]
+            if pred_max != pred_min:
+                pred_time = ref_min + (pred_time - pred_min) * (ref_max - ref_min) / (pred_max - pred_min)
+            else:
+                pred_time = np.linspace(ref_min, ref_max, len(pred_time))
+    
     # Untrimmed predictions are close to true signal scale, plot as-is
     pred_denorm = pred
     plt.plot(pred_time, pred_denorm, '-', color='blue', label='Manual Model, Data Set 1')
@@ -160,6 +202,21 @@ if results['genetic']['pred'] is not None:
     if pred_time is None or len(pred_time) != len(pred):
         print(f"⚠️ Missing or mismatched time for genetic model (state {genetic_state}); using indices")
         pred_time = np.arange(len(pred))
+    
+    # Align time arrays with reference time if available
+    if reference_time is not None and pred_time is not None:
+        # Scale prediction time to match reference time range
+        if len(pred_time) == len(reference_time):
+            # If same length, use reference time directly for proper alignment
+            pred_time = reference_time
+        else:
+            # Scale to match reference time range
+            ref_min, ref_max = reference_time[0], reference_time[-1]
+            pred_min, pred_max = pred_time[0], pred_time[-1]
+            if pred_max != pred_min:
+                pred_time = ref_min + (pred_time - pred_min) * (ref_max - ref_min) / (pred_max - pred_min)
+            else:
+                pred_time = np.linspace(ref_min, ref_max, len(pred_time))
     
     # Assume genetic model predictions are untrimmed and follow same scaling
     pred_denorm = pred

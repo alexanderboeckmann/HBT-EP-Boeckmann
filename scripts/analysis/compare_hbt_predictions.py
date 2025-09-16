@@ -1,10 +1,34 @@
-import papermill as pm
+"""
+HBT Prediction Comparison Script
+
+This script compares HBT predictions between trimmed and untrimmed 
+data analysis methods across different plasma states. It executes both analysis types for 
+specified states and generates comparison plots.
+
+Modes:
+- mode1: States 1 & 3 with shot 119671
+- mode2: States 2 & 3 with shot 114458
+
+The script runs both trimmed and untrimmed analysis for each state, loads the results,
+and creates visualization plots showing predictions vs true data with proper normalization.
+"""
+
+import subprocess
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 import argparse
+import tempfile
+import json
+from pathlib import Path
 
-#currently only doing mode amplitude 2.
+# Centralized project root and path utilities
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
+
+# Currently only doing mode amplitude 2 (ma2) analysis
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run HBT predictions for different state configurations.")
@@ -28,11 +52,11 @@ RESERVED_SHOTS = {
 }
 SELECTED_DATA_TYPE = 'ma2'
 NOTEBOOKS = {
-    'trimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/trimmed_HBT_analysis.ipynb',
-    'untrimmed': '/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/HighFreqMLModeling/File_running/untrimmed_HBT_analysis.ipynb'
+    'trimmed': project_path('notebooks', 'trimmed_HBT_analysis.py'),
+    'untrimmed': project_path('notebooks', 'untrimmed_HBT_analysis_cleaned.py')
 }
-OUTPUT_DIR = 'output_notebooks'
-FIGURE_FILENAME = f"hbt_prediction_comparison_{args.mode}.png"
+OUTPUT_DIR = project_path('outputs', 'notebooks')
+FIGURE_FILENAME = project_path('outputs', f"hbt_prediction_comparison_{args.mode}.png")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Select states and shots based on mode
@@ -51,9 +75,9 @@ for notebook_type in NOTEBOOKS:
     for state in STATES:
         input_notebook = NOTEBOOKS[notebook_type]
         output_notebook = os.path.join(OUTPUT_DIR, f'{notebook_type}_state_{state}_output.ipynb')
-        output_true = f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_true.npy'
-        output_pred = f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_pred.npy'
-        output_time = f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_time.npy'
+        output_true = project_path('data', 'predictions', f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_true.npy')
+        output_pred = project_path('data', 'predictions', f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_pred.npy')
+        output_time = project_path('data', 'predictions', f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_time.npy')
         
         # Parameters to pass to the notebook
         parameters = {
@@ -63,17 +87,35 @@ for notebook_type in NOTEBOOKS:
             'EPOCH_NUM': EPOCHS
         }
         
-        # Execute the notebook
+        # Execute the Python script
         try:
-            print(f"Executing {notebook_type} notebook for state {state} with reserved shot {shots[state]}...")
-            pm.execute_notebook(
-                input_notebook,
-                output_notebook,
-                parameters=parameters,
-                kernel_name='python3'
-            )
+            print(f"Executing {notebook_type} script for state {state} with reserved shot {shots[state]}...")
+            
+            # Create a temporary parameters file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                json.dump(parameters, f, indent=2)
+                params_file = f.name
+            
+            # Execute the Python script with parameters
+            result = subprocess.run([
+                'python', input_notebook,
+                '--state', str(state),
+                '--selected_data_type', parameters['selected_data_type'],
+                '--RESERVED_SHOT', str(parameters['RESERVED_SHOT']),
+                '--EPOCH_NUM', str(parameters['EPOCH_NUM'])
+            ], capture_output=True, text=True, cwd=PROJECT_ROOT)
+            
+            if result.returncode != 0:
+                print(f"Error executing {notebook_type} script for state {state}: {result.stderr}")
+                continue
+            else:
+                print(f"Successfully executed {notebook_type} script for state {state}")
+            
+            # Clean up temporary file
+            os.unlink(params_file)
+            
         except Exception as e:
-            print(f"Error executing {notebook_type} notebook for state {state}: {str(e)}")
+            print(f"Error executing {notebook_type} script for state {state}: {str(e)}")
             continue
         
         # Load results
@@ -118,16 +160,21 @@ color_table = {
 # ---------- 1. Plot only one instance of unnormalized true data ----------
 true_plotted = False
 original_true = None
+reference_time = None  # Store reference time for alignment
 for state in STATES:
     if results['untrimmed'][state]['true'] is not None:
         true = results['untrimmed'][state]['true']
         original_true = true
-        downsampled_time = results['untrimmed'][state]['time']
+        true_time = results['untrimmed'][state]['time']
         
-        if downsampled_time is None or len(downsampled_time) != len(true):
+        if true_time is None or len(true_time) != len(true):
             print(f"⚠️ Missing or mismatched time for true data (state {state}); using indices")
-            downsampled_time = np.arange(len(true))
-        plt.plot(downsampled_time, true, '-', color='black', label=f'True ma2 (State {state}, Shot {shots[state]})')
+            true_time = np.arange(len(true))
+        
+        # Store reference time for aligning other plots
+        reference_time = true_time
+        
+        plt.plot(true_time, true, '-', color='black', label=f'True ma2 (State {state}, Shot {shots[state]})')
 
         # Store scale for prediction normalization
         y_min, y_max = np.min(true), np.max(true)
@@ -149,6 +196,40 @@ for notebook_type in results:
 
         if pred is None:
             continue
+
+        # Handle dimension mismatch between time and prediction arrays
+        if pred_time is not None and len(pred_time) != len(pred):
+            print(f"⚠️ Time/prediction dimension mismatch for {notebook_type} state {state}: time={len(pred_time)}, pred={len(pred)}")
+            # Downsample time array to match prediction array length
+            if len(pred_time) > len(pred):
+                # Downsample time array to match prediction length
+                original_length = len(pred_time)
+                indices = np.linspace(0, len(pred_time) - 1, len(pred), dtype=int)
+                pred_time = pred_time[indices]
+                print(f"   Downsampled time array from {original_length} to {len(pred)} points")
+            else:
+                # If time is shorter, create indices
+                pred_time = np.arange(len(pred))
+                print(f"   Created time indices for {len(pred)} points")
+        elif pred_time is None:
+            # Create time array if missing
+            pred_time = np.arange(len(pred))
+            print(f"⚠️ Missing time data for {notebook_type} state {state}; using indices")
+        
+        # Align time arrays with reference time if available
+        if reference_time is not None and pred_time is not None:
+            # Scale prediction time to match reference time range
+            if len(pred_time) == len(reference_time):
+                # If same length, use reference time directly for proper alignment
+                pred_time = reference_time
+            else:
+                # Scale to match reference time range
+                ref_min, ref_max = reference_time[0], reference_time[-1]
+                pred_min, pred_max = pred_time[0], pred_time[-1]
+                if pred_max != pred_min:
+                    pred_time = ref_min + (pred_time - pred_min) * (ref_max - ref_min) / (pred_max - pred_min)
+                else:
+                    pred_time = np.linspace(ref_min, ref_max, len(pred_time))
 
         # Debugging: Print prediction range
         print(f"{notebook_type} State {state} - Pred min: {np.min(pred):.4f}, max: {np.max(pred):.4f}")

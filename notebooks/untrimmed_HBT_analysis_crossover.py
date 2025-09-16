@@ -1,6 +1,24 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+"""
+Untrimmed HBT Analysis Crossover Script
+
+This script performs analysis on raw, untrimmed plasma data
+with crossover validation methodology. It trains CNN models using a specific data splitting
+approach where different states are used for training and testing.
+
+Key features:
+- Uses raw (untrimmed) plasma data without extensive preprocessing
+- Implements crossover validation between different plasma states
+- Trains models on one state and tests on another
+- Supports configurable model architecture and training parameters
+- Saves results for genetic algorithm optimization
+
+This version is specifically designed for parameter optimization workflows
+where different state combinations are tested systematically using raw data.
+"""
+
 import tensorflow as tf
 from tensorflow import keras
 import numpy as np
@@ -10,6 +28,8 @@ from PIL import Image
 import glob
 import random
 import ast
+from pathlib import Path
+import argparse
 
 # Parameters
 state = None
@@ -28,64 +48,109 @@ CONV2D_SIZE = None
 DENSE_LAYER_NEURONS = None
 MAX_POOLING_SIZE = None
 
-# Manual override logic
-manual = False  # Toggle this to True to use manual values, False to skip
+# Command-line argument parsing
+parser = argparse.ArgumentParser(description='HBT Analysis Crossover Script')
+parser.add_argument('--state', type=int, help='State number (1, 2, or 3)')
+parser.add_argument('--selected_data_type', type=str, default='ma2', help='Data type (default: ma2)')
+parser.add_argument('--RESERVED_SHOT', type=int, help='Reserved shot number')
+parser.add_argument('--EPOCH_NUM', type=int, default=15, help='Number of epochs (default: 15)')
+parser.add_argument('--VALIDATION_SPLIT', type=float, default=0.2, help='Validation split (default: 0.2)')
+parser.add_argument('--ACTIVATION_FUNC', type=str, default='relu', help='Activation function (default: relu)')
+parser.add_argument('--LOSS_FUNC', type=str, default='mae', help='Loss function (default: mae)')
+parser.add_argument('--OPTIMIZER_FUNC', type=str, default='adam', help='Optimizer function (default: adam)')
+parser.add_argument('--OUTLIER_CUTOFF', type=float, default=99, help='Outlier cutoff percentile (default: 99)')
+parser.add_argument('--NUM_CONV2D_LAYERS', type=int, default=2, help='Number of Conv2D layers (default: 2)')
+parser.add_argument('--NUM_DENSE_LAYERS', type=int, default=1, help='Number of dense layers (default: 1)')
+parser.add_argument('--CONV2D_NEURONS', type=str, default='[16, 16]', help='Conv2D neurons as JSON list (default: [16, 16])')
+parser.add_argument('--CONV2D_SIZE', type=str, default='[(8, 8), (8, 8)]', help='Conv2D sizes as JSON list (default: [(8, 8), (8, 8)])')
+parser.add_argument('--DENSE_LAYER_NEURONS', type=str, default='[10]', help='Dense layer neurons as JSON list (default: [10])')
+parser.add_argument('--MAX_POOLING_SIZE', type=str, default='(4, 4)', help='Max pooling size as JSON tuple (default: (4, 4))')
 
-if manual:
-    state = 1  # state 1, 2, or 3
-    selected_data_type = 'ma2'  # ma2 basically always
-    if state == 1:
-        RESERVED_SHOT = 119671  # for state 1
-    elif state == 2:
-        RESERVED_SHOT = 114458  # for state 2
-    else:
-        RESERVED_SHOT = 119671  # Default for state 3
-    EPOCH_NUM = 15
-    VALIDATION_SPLIT = 0.2
-    ACTIVATION_FUNC = 'relu'
-    LOSS_FUNC = 'mae'
-    OPTIMIZER_FUNC = 'adam'
-    OUTLIER_CUTOFF = 99
-    NUM_CONV2D_LAYERS = 2
-    NUM_DENSE_LAYERS = 1
-    CONV2D_NEURONS = [16, 16]
-    CONV2D_SIZE = [(8, 8), (8, 8)]
-    DENSE_LAYER_NEURONS = [10]
-    MAX_POOLING_SIZE = (4, 4)
+args = parser.parse_args()
 
-    parameters = {
-        'state': state,
-        'selected_data_type': selected_data_type,
-        'RESERVED_SHOT': RESERVED_SHOT,
-        'EPOCH_NUM': EPOCH_NUM,
-        'VALIDATION_SPLIT': VALIDATION_SPLIT,
-        'ACTIVATION_FUNC': ACTIVATION_FUNC,
-        'LOSS_FUNC': LOSS_FUNC,
-        'OPTIMIZER_FUNC': OPTIMIZER_FUNC,
-        'OUTLIER_CUTOFF': OUTLIER_CUTOFF,
-        'NUM_CONV2D_LAYERS': NUM_CONV2D_LAYERS,
-        'NUM_DENSE_LAYERS': NUM_DENSE_LAYERS,
-        'CONV2D_NEURONS': CONV2D_NEURONS,
-        'CONV2D_SIZE': CONV2D_SIZE,
-        'DENSE_LAYER_NEURONS': DENSE_LAYER_NEURONS,
-        'MAX_POOLING_SIZE': MAX_POOLING_SIZE
-    }
+# Use command-line arguments if provided, otherwise use manual override
+if args.state is not None:
+    # Use command-line arguments
+    state = args.state
+    selected_data_type = args.selected_data_type
+    RESERVED_SHOT = args.RESERVED_SHOT
+    EPOCH_NUM = args.EPOCH_NUM
+    VALIDATION_SPLIT = args.VALIDATION_SPLIT
+    ACTIVATION_FUNC = args.ACTIVATION_FUNC
+    LOSS_FUNC = args.LOSS_FUNC
+    OPTIMIZER_FUNC = args.OPTIMIZER_FUNC
+    OUTLIER_CUTOFF = args.OUTLIER_CUTOFF
+    NUM_CONV2D_LAYERS = args.NUM_CONV2D_LAYERS
+    NUM_DENSE_LAYERS = args.NUM_DENSE_LAYERS
+    CONV2D_NEURONS = ast.literal_eval(args.CONV2D_NEURONS)
+    CONV2D_SIZE = ast.literal_eval(args.CONV2D_SIZE)
+    DENSE_LAYER_NEURONS = ast.literal_eval(args.DENSE_LAYER_NEURONS)
+    MAX_POOLING_SIZE = ast.literal_eval(args.MAX_POOLING_SIZE)
+    
+    # Set RESERVED_SHOT based on state if not provided
+    if RESERVED_SHOT is None:
+        if state == 1:
+            RESERVED_SHOT = 119671
+        elif state == 2:
+            RESERVED_SHOT = 114458
+        else:
+            RESERVED_SHOT = 119671
+else:
+    # Manual override logic - toggle this to True to use manual values
+    manual = False
+    
+    if manual:
+        state = 1  # state 1, 2, or 3
+        selected_data_type = 'ma2'  # ma2 basically always
+        if state == 1:
+            RESERVED_SHOT = 119671  # for state 1
+        elif state == 2:
+            RESERVED_SHOT = 114458  # for state 2
+        else:
+            RESERVED_SHOT = 119671  # Default for state 3
+        EPOCH_NUM = 15
+        VALIDATION_SPLIT = 0.2
+        ACTIVATION_FUNC = 'relu'
+        LOSS_FUNC = 'mae'
+        OPTIMIZER_FUNC = 'adam'
+        OUTLIER_CUTOFF = 99
+        NUM_CONV2D_LAYERS = 2
+        NUM_DENSE_LAYERS = 1
+        CONV2D_NEURONS = [16, 16]
+        CONV2D_SIZE = [(8, 8), (8, 8)]
+        DENSE_LAYER_NEURONS = [10]
+        MAX_POOLING_SIZE = (4, 4)
+
 
 # Define shot lists and paths
 SHOT_PATHS = {
     'new_shots': {
         'range': (119591, 119769),
-        'data_path': 'data/shots/new/',
-        'hbt_path': 'data/shots/new/',
-        'ip_path': 'data/shots/new/'
+        'data_path': None,
+        'hbt_path': None,
+        'ip_path': None
     },
     'old_shots': {
         'range': (114407, 114473),
-        'data_path': 'data/shots/old/',
-        'hbt_path': 'data/shots/old/',
-        'ip_path': 'data/shots/old/'
+        'data_path': None,
+        'hbt_path': None,
+        'ip_path': None
     }
 }
+
+# Centralized project root and path utilities
+PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
+
+# Initialize absolute paths in SHOT_PATHS
+SHOT_PATHS['new_shots']['data_path'] = project_path('data', 'shots', 'new')
+SHOT_PATHS['new_shots']['hbt_path'] = project_path('data', 'shots', 'new')
+SHOT_PATHS['new_shots']['ip_path'] = project_path('data', 'shots', 'new')
+SHOT_PATHS['old_shots']['data_path'] = project_path('data', 'shots', 'old')
+SHOT_PATHS['old_shots']['hbt_path'] = project_path('data', 'shots', 'old')
+SHOT_PATHS['old_shots']['ip_path'] = project_path('data', 'shots', 'old')
 
 if state == 1:
     shot_list = [119591, 119599, 119601, 119646, 119648, 119653, 119654, 119658, 119659,
@@ -311,7 +376,7 @@ training_vector = training_vector[:-test_size]
 target_vector = target_vector[:-test_size]
 
 # Save normalization in data/predictions
-pred_dir_npz = os.path.join('data', 'predictions')
+pred_dir_npz = project_path('data', 'predictions')
 os.makedirs(pred_dir_npz, exist_ok=True)
 normalization_filename = os.path.join(pred_dir_npz, f"normalization_{notebook_type}_state_{state}.npz")
 np.savez(normalization_filename,
@@ -386,7 +451,7 @@ history = Model.fit(training_vector, target_vector,
 predictions = Model.predict(testing_inputs)
 
 # Load state2 model for crossover analysis
-model_path_new = os.path.join('data', 'models', 'untrimmed_model_good_state2.keras')
+model_path_new = project_path('data', 'models', 'untrimmed_model_good_state2.keras')
 if os.path.exists(model_path_new):
     state2_model = keras.models.load_model(model_path_new)
     print(f"Loaded state 2 model from {model_path_new} for predictions.")
@@ -446,7 +511,7 @@ print(f"Untrimmed: Saving results for state 2, shot {RESERVED_SHOT} from state 1
 print(f"True data defined: {'hbt_dataType' in locals()}, shape: {hbt_dataType[shot_list.index(RESERVED_SHOT)][:, 0].shape if 'hbt_dataType' in locals() else 'N/A'}")
 print(f"Predictions (state 2) defined: {'reserved_predictions_state1' in locals()}, shape: {reserved_predictions_state1.shape if 'reserved_predictions_state1' in locals() else 'N/A'}")
 print(f"Time data defined: {'hbt_time_data' in locals()}, shape: {time_data.shape if 'time_data' in locals() else 'N/A'}")
-pred_dir = os.path.join('data', 'predictions')
+pred_dir = project_path('data', 'predictions')
 os.makedirs(pred_dir, exist_ok=True)
 np.save(os.path.join(pred_dir, f'results_{notebook_type}_state_2_{selected_data_type}_true.npy'), hbt_dataType[shot_list.index(RESERVED_SHOT)][:, 0])
 np.save(os.path.join(pred_dir, f'results_{notebook_type}_state_2_{selected_data_type}_pred.npy'), reserved_predictions_state1)

@@ -1,3 +1,19 @@
+"""
+Optimization Results Parser Script
+
+This script parses genetic algorithm optimization results from individual generation
+files and consolidates them into a single CSV file for analysis. It extracts
+parameter configurations, performance metrics, and other relevant data from
+the optimization run directories.
+
+Features:
+- Scans optimization directories for individual result files
+- Extracts parameters and performance metrics from each generation
+- Consolidates data into a single CSV file for analysis
+- Handles missing or corrupted result files gracefully
+- Provides data restoration capabilities for incomplete runs
+"""
+
 import pandas as pd
 import re
 import ast
@@ -5,9 +21,16 @@ import os
 import glob
 import numpy as np
 import shutil
+from pathlib import Path
+
+# Centralized project root and path utilities
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
 
 # Configuration
-RUN_DIR = 'optimization_results/run_20250804_150431'  # Specify your run directory here
+RUN_DIR = project_path('data', 'optimization_results', 'run_20250804_150431')  # Specify your run directory here
 OUTPUT_CSV = 'hbt_optimization_results_restored.csv'
 
 def compute_mape(true_data, pred_data):

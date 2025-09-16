@@ -1,7 +1,24 @@
+"""
+HBT Prediction Plotting Script
+
+This script loads and visualizes previously saved HBT prediction results from .npy files.
+It creates comparison plots between trimmed and untrimmed predictions for different plasma states.
+
+Unlike compare_hbt_predictions.py, this script only plots existing results without running
+new analysis - useful for reviewing previously generated predictions.
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 import argparse
+from pathlib import Path
+
+# Centralized project root and path utilities
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
 
 # ------------------------
 # Command-line arguments
@@ -16,10 +33,10 @@ args = parser.parse_args()
 # ------------------------
 STATES = [1, 3] if args.mode == 'mode1' else [2, 3]
 SELECTED_DATA_TYPE = 'ma2'
-FIGURE_FILENAME = f"hbt_prediction_comparison_{args.mode}.png"
+FIGURE_FILENAME = project_path('outputs', f"hbt_prediction_comparison_{args.mode}.png")
 
 def get_result_file(notebook_type, state, suffix):
-    return f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_{suffix}.npy'
+    return project_path('data', 'predictions', f'results_{notebook_type}_state_{state}_{SELECTED_DATA_TYPE}_{suffix}.npy')
 
 results = {
     'trimmed': {state: {'true': None, 'pred': None, 'time': None} for state in STATES},
@@ -56,16 +73,22 @@ plt.figure(figsize=(12, 8))
 DEFAULT_FRAME_COUNT = 800
 true_plotted = False
 original_true = None
+reference_time = None  # Store reference time for alignment
+
 for state in STATES:
     if results['untrimmed'][state]['true'] is not None:
         true = results['untrimmed'][state]['true']
         original_true = true
-        downsampled_time = results['untrimmed'][state]['time'] # come in at 800
+        true_time = results['untrimmed'][state]['time'] # come in at 800
         
-        if downsampled_time is None or len(downsampled_time) != len(true):
+        if true_time is None or len(true_time) != len(true):
             print(f"⚠️  Missing or mismatched time for TRUE data; using indices")
-            downsampled_time = np.arange(len(true))
-        plt.plot(downsampled_time, true, '-', color='black', label='True Signal (Untrimmed)')
+            true_time = np.arange(len(true))
+        
+        # Store reference time for aligning other plots
+        reference_time = true_time
+        
+        plt.plot(true_time, true, '-', color='black', label='True Signal (Untrimmed)')
 
         # Store scale for prediction normalization
         y_min, y_max = np.min(true), np.max(true)
@@ -100,6 +123,33 @@ for notebook_type in results:
 
         # Debugging: Print prediction range
         print(f"{notebook_type} State {state} - Pred min: {np.min(pred):.4f}, max: {np.max(pred):.4f}")
+
+        # Handle time array downsampling and alignment
+        if pred_time is not None and len(pred_time) != len(pred):
+            print(f"⚠️  Time array length ({len(pred_time)}) doesn't match prediction length ({len(pred)}). Downsampling time array.")
+            # Downsample time array to match prediction length
+            if len(pred_time) > len(pred):
+                # Downsample by taking evenly spaced indices
+                indices = np.linspace(0, len(pred_time) - 1, len(pred), dtype=int)
+                pred_time = pred_time[indices]
+            else:
+                # If time is shorter, extend it linearly
+                pred_time = np.linspace(pred_time[0], pred_time[-1], len(pred))
+        
+        # Align time arrays with reference time if available
+        if reference_time is not None and pred_time is not None:
+            # Scale prediction time to match reference time range
+            if len(pred_time) == len(reference_time):
+                # If same length, use reference time directly for proper alignment
+                pred_time = reference_time
+            else:
+                # Scale to match reference time range
+                ref_min, ref_max = reference_time[0], reference_time[-1]
+                pred_min, pred_max = pred_time[0], pred_time[-1]
+                if pred_max != pred_min:
+                    pred_time = ref_min + (pred_time - pred_min) * (ref_max - ref_min) / (pred_max - pred_min)
+                else:
+                    pred_time = np.linspace(ref_min, ref_max, len(pred_time))
 
         if notebook_type == 'untrimmed':
             # Untrimmed predictions are close to true signal scale, plot as-is

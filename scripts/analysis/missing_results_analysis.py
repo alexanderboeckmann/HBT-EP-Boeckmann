@@ -1,8 +1,29 @@
+"""
+Missing Results Analysis Script
+
+This script analyzes optimization runs to identify missing or incomplete results.
+It scans through optimization directories to find individuals that failed to complete
+or produced incomplete output files.
+
+Features:
+- Scans optimization result directories for missing files
+- Identifies failed or incomplete optimization runs
+- Provides statistics on completion rates
+- Helps debug optimization workflow issues
+"""
+
 import os
 import numpy as np
+from pathlib import Path
+
+# Centralized project root and path utilities
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
 
 # Configuration
-RUN_DIR = 'optimization_results/run_20250804_150431'
+RUN_DIR = project_path('data', 'optimization_results', 'run_20250804_150431')
 
 def print_npy_contents(file_path):
     """Print contents of a .npy file."""
