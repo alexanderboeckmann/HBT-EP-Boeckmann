@@ -32,7 +32,9 @@ from pathlib import Path
 PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
 def project_path(*parts):
-    return os.path.join(PROJECT_ROOT, *parts)
+    # Filter out None values before joining
+    filtered_parts = [part for part in parts if part is not None]
+    return os.path.join(PROJECT_ROOT, *filtered_parts)
 
 # Configuration
 POPULATION_SIZE = 40  # Change to 100 if that's your intended size
@@ -121,6 +123,7 @@ def construct_paths(individual, run_dir, existing_ids):
 
 def prepare_parameters(individual):
     return {
+        'individual_id': individual['id'],
         'state': int(individual['state']),
         'selected_data_type': 'ma2',
         'RESERVED_SHOT': int(individual['reserved_shot']),
@@ -146,6 +149,9 @@ def execute_script(input_script, parameters, individual_dir):
         for key, value in parameters.items():
             if key != 'individual_id':  # Skip internal parameter
                 cmd.extend([f'--{key}', str(value)])
+        
+        # Add output directory parameter
+        cmd.extend(['--output_dir', individual_dir])
         
         # Execute the script
         result = subprocess.run(
@@ -194,19 +200,8 @@ def compute_mape(true, pred):
     return np.mean(errors) * 100
 
 def print_summary(individual, mape, elapsed):
-    print(f"Success for {individual['id']}: "
-          f"type={individual['notebook_type']} state={individual['state']} "
-          f"shot={individual['reserved_shot']} epochs={individual['epochs']} "
-          f"split={individual['validation_split']} act={individual['activation_func']} "
-          f"loss={individual['loss_func']} opt={individual['optimizer_func']} "
-          f"cutoff={individual['outlier_cutoff']} "
-          f"conv2d_layers={individual['num_conv2d_layers']} "
-          f"dense_layers={individual['num_dense_layers']} "
-          f"conv2d_neurons={individual['conv2d_neurons']} "
-          f"conv2d_size={individual['conv2d_size']} "
-          f"dense_neurons={individual['dense_layer_neurons']} "
-          f"pool_size={individual['max_pooling_size']} "
-          f"MAPE={mape:.4f}% time={elapsed:.2f}s")
+    print(f"✓ {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} | "
+          f"MAPE: {mape:.2f}% | {elapsed:.1f}s")
 
 def evaluate_individual(individual, run_dir, existing_ids):
     start = time.time()
@@ -215,16 +210,14 @@ def evaluate_individual(individual, run_dir, existing_ids):
         return None, None
     input_nb, output_nb, path_true, path_pred, individual_dir, params_path = construct_paths(individual, run_dir, existing_ids)
     params = prepare_parameters(individual)
-    print(f"Executing notebook with parameters: {params}")
     with open(params_path, 'w') as f:
         json.dump(params, f, indent=4)
     try:
         if not os.path.exists(input_nb):
-            print(f"Notebook not found: {input_nb}")
+            print(f"✗ {individual['id'][:8]}... | Notebook not found: {input_nb}")
             return None, None
         execute_script(input_nb, params, individual_dir)
         npy_files = {f: os.path.join(individual_dir, f) for f in os.listdir(individual_dir) if f.endswith('.npy')}
-        print(f"Found .npy files in {individual_dir}: {list(npy_files.keys())}")
         true_file = None
         pred_file = None
         for name, path in npy_files.items():
@@ -233,7 +226,7 @@ def evaluate_individual(individual, run_dir, existing_ids):
             elif 'pred' in name.lower():
                 pred_file = path
         if true_file is None or pred_file is None:
-            print(f"Missing true or pred file in {individual_dir}: true={true_file}, pred={pred_file}")
+            print(f"✗ {individual['id'][:8]}... | Missing output files: true={true_file is not None}, pred={pred_file is not None}")
             return None, None
         base_name = os.path.basename(true_file).replace('_true.npy', '')
         parts = base_name.split('_')
@@ -449,12 +442,16 @@ def genetic_algorithm(run_dir=None):
     # Track existing IDs to prevent conflicts
     existing_ids = set(results_df['individual_id']) if not results_df.empty else set()
     for generation in range(start_gen + 1, GENERATIONS + 1):
-        print(f"\nGeneration {generation}/{GENERATIONS} ({time.strftime('%H:%M:%S')})")
+        print(f"\n🔄 Generation {generation}/{GENERATIONS} ({time.strftime('%H:%M:%S')})")
         generation_start = time.time()
         fitness = []
         for i, individual in enumerate(population, 1):
-            print(f"Evaluating {i}/{POPULATION_SIZE} (ID: {individual['id']})")
-            _, mape = evaluate_individual(individual, run_dir, existing_ids)
+            print(f"  [{i:2d}/{POPULATION_SIZE}] {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} ({individual['epochs']}ep) | ", end="", flush=True)
+            try:
+                _, mape = evaluate_individual(individual, run_dir, existing_ids)
+            except Exception as e:
+                print(f"ERROR: {e}")
+                continue
             if mape is None:
                 continue
             fitness.append({'individual': individual, 'mape': mape})
@@ -494,7 +491,7 @@ def genetic_algorithm(run_dir=None):
         results_df.to_csv(os.path.join(run_dir, CSV_FILENAME), index=False)
         avg_mape = np.mean([f['mape'] for f in fitness])
         mape_history.append(avg_mape)
-        print(f"Generation {generation} summary: avg MAPE={avg_mape:.4f}, best so far={best_mape:.4f}, time={time.time() - generation_start:.2f}s")
+        print(f"  📊 Gen {generation} | Avg: {avg_mape:.2f}% | Best: {best_mape:.2f}% | Time: {time.time() - generation_start:.1f}s")
         create_analysis_plots(results_df, plot_dir)
         top_n = max(2, int(POPULATION_SIZE * TOP_PERCENT))
         fitness.sort(key=lambda x: x['mape'])
@@ -539,13 +536,12 @@ def genetic_algorithm(run_dir=None):
                 shutil.rmtree(best_link)
             shutil.copytree(best_individual_dir, best_link)
             print(f"Copied best individual directory to: {best_link}")
-    print(f"\nOptimization complete. Best MAPE: {best_mape:.2f}%")
-    print(f"Best Parameters: {best_params}")
-    print(f"All run files (individuals, CSV, plots) saved in: {run_dir}")
-    print(f"Analysis plots saved in: {plot_dir}")
-    print(f"Best individual directory: {best_individual_dir}")
+    print(f"\n🎉 Optimization Complete!")
+    print(f"🏆 Best MAPE: {best_mape:.2f}%")
+    print(f"📁 Results saved in: {run_dir}")
+    print(f"🔗 Best individual: {best_individual_dir}")
     return best_params, best_mape
 
 if __name__ == "__main__":
-    run_dir = project_path('data', 'optimization_results', 'run_20250804_150431')
-    best_params, best_mape = genetic_algorithm(run_dir)
+    # Pass None to create a new timestamped run directory
+    best_params, best_mape = genetic_algorithm(None)

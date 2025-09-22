@@ -65,6 +65,7 @@ parser.add_argument('--CONV2D_NEURONS', type=str, default='[32, 32, 16]', help='
 parser.add_argument('--CONV2D_SIZE', type=str, default='[(8, 8), (8, 8), (4, 4)]', help='Conv2D sizes as JSON list (default: [(8, 8), (8, 8), (4, 4)])')
 parser.add_argument('--DENSE_LAYER_NEURONS', type=str, default='[64, 32]', help='Dense layer neurons as JSON list (default: [64, 32])')
 parser.add_argument('--MAX_POOLING_SIZE', type=str, default='(2, 2)', help='Max pooling size as JSON tuple (default: (2, 2))')
+parser.add_argument('--output_dir', type=str, help='Output directory for saving results (default: data/predictions)')
 
 args = parser.parse_args()
 
@@ -646,8 +647,11 @@ print(f"True data defined: {'reserved_shot_hbt' in locals()}, shape: {reserved_s
 print(f"Predictions (state 1) defined: {'reserved_predictions_state1' in locals()}, shape: {reserved_predictions_state1.shape if 'reserved_predictions_state1' in locals() else 'N/A'}")
 print(f"Time data defined: {'reserved_shot_time' in locals()}, shape: {time_data.shape if 'time_data' in locals() else 'N/A'}")
 
-# Ensure predictions directory exists and save results under data/predictions
-pred_dir = os.path.join('data', 'predictions')
+# Ensure predictions directory exists and save results
+if args.output_dir:
+    pred_dir = args.output_dir
+else:
+    pred_dir = os.path.join('data', 'predictions')
 os.makedirs(pred_dir, exist_ok=True)
 np.save(os.path.join(pred_dir, f'results_{notebook_type}_state_2_{selected_data_type}_true.npy'), reserved_shot_hbt[:, 0])
 np.save(os.path.join(pred_dir, f'results_{notebook_type}_state_2_{selected_data_type}_pred.npy'), reserved_predictions_state1)
