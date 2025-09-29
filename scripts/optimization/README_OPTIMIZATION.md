@@ -1,28 +1,5 @@
 # HBT Parameter Optimization - Performance Guide
 
-## Fastest Speed Improvements
-
-### 1. **Parallel Execution** (10-40x speedup)
-Your original code runs each individual sequentially. The new parallel version uses all CPU cores:
-
-```bash
-# Run with parallel processing (uses all CPU cores)
-python scripts/optimization/optimize_hbt_parameters_parallel.py
-
-# Run with specific number of workers
-python scripts/optimization/optimize_hbt_parameters_parallel.py --max_workers 8
-```
-
-### 2. **Memory-Efficient Processing**
-The new version processes data more efficiently to handle larger populations and longer runs.
-
-## Performance Comparison
-
-| Method | Speed | Setup Complexity | Cost |
-|--------|-------|------------------|------|
-| **Original Sequential** | 1x | Low | Free |
-| **Parallel Local** | 10-40x | Low | Free |
-
 ## Quick Start
 
 ### Local Parallel (Fastest to get started)
