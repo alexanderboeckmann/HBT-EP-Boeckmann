@@ -344,19 +344,23 @@ def main():
         print("- Check file paths and structure")
         print("- Fix any syntax errors")
     
-    # Save results
-    project_root = Path(__file__).parent.parent.parent
-    report_file = project_root / 'pre_server_check_report.json'
-    with open(report_file, 'w') as f:
-        json.dump({
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'results': results,
-            'total_checks': total_checks,
-            'passed_checks': passed_checks,
-            'all_passed': all_passed
-        }, f, indent=2)
-    
-    print(f"\nDetailed report saved to: {report_file}")
+    # Save results only if there are issues or if explicitly requested
+    if not all_passed or os.environ.get('SAVE_VALIDATION_REPORT', '').lower() == 'true':
+        project_root = Path(__file__).parent.parent.parent
+        report_file = project_root / 'pre_server_check_report.json'
+        with open(report_file, 'w') as f:
+            json.dump({
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'results': results,
+                'total_checks': total_checks,
+                'passed_checks': passed_checks,
+                'all_passed': all_passed
+            }, f, indent=2)
+        
+        if not all_passed:
+            print(f"\nDetailed report saved to: {report_file}")
+        else:
+            print(f"\nReport saved to: {report_file} (SAVE_VALIDATION_REPORT=true)")
 
 if __name__ == "__main__":
     main()

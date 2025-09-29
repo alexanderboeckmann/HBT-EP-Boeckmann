@@ -8,3 +8,7 @@ __pycache__/
 *.pyd
 .DS_Store
 *.log
+
+# Validation reports (generated files)
+*_check_report.json
+*_validation_report.json
