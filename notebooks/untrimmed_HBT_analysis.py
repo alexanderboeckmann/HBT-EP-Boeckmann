@@ -65,6 +65,8 @@ parser.add_argument('--CONV2D_NEURONS', type=str, default='[16, 16]', help='Conv
 parser.add_argument('--CONV2D_SIZE', type=str, default='[(8, 8), (8, 8)]', help='Conv2D sizes as JSON list (default: [(8, 8), (8, 8)])')
 parser.add_argument('--DENSE_LAYER_NEURONS', type=str, default='[10]', help='Dense layer neurons as JSON list (default: [10])')
 parser.add_argument('--MAX_POOLING_SIZE', type=str, default='(4, 4)', help='Max pooling size as JSON tuple (default: (4, 4))')
+parser.add_argument('--EARLY_STOPPING_PATIENCE', type=int, default=20, help='Early stopping patience (default: 20)')
+parser.add_argument('--EARLY_STOPPING_MIN_DELTA', type=float, default=0.01, help='Early stopping minimum delta (default: 0.01)')
 parser.add_argument('--output_dir', type=str, help='Output directory for saving results (default: data/predictions)')
 
 args = parser.parse_args()
@@ -491,7 +493,9 @@ william_model.compile(optimizer=optimizer_func, loss=loss_func)
 william_model.summary()
 
 # Train the model
-early_stop = keras.callbacks.EarlyStopping(monitor='val_loss', patience=20)
+early_stop = keras.callbacks.EarlyStopping(monitor='val_loss', 
+                                         patience=args.EARLY_STOPPING_PATIENCE,
+                                         min_delta=args.EARLY_STOPPING_MIN_DELTA)
 Model = william_model
 history = Model.fit(training_vector, target_vector,
                        epochs=EPOCH_NUM,
