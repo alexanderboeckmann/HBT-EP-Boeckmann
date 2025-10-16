@@ -51,7 +51,8 @@ MAX_POOLING_SIZE = None
 # Command-line argument parsing
 parser = argparse.ArgumentParser(description='HBT Analysis Script')
 parser.add_argument('--state', type=int, help='State number (1, 2, or 3)')
-parser.add_argument('--selected_data_type', type=str, default='ma2', help='Data type (default: ma2)')
+parser.add_argument('--selected_data_type', type=str, default='ma2', 
+                    help='Data type: ma1-ma4 (mode amplitude 1-4) or mp1-mp4 (mode phase 1-4) (default: ma2)')
 parser.add_argument('--RESERVED_SHOT', type=int, help='Reserved shot number')
 parser.add_argument('--EPOCH_NUM', type=int, default=15, help='Number of epochs (default: 15)')
 parser.add_argument('--VALIDATION_SPLIT', type=float, default=0.2, help='Validation split (default: 0.2)')

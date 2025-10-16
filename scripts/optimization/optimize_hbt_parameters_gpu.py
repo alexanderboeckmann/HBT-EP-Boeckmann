@@ -41,8 +41,8 @@ from typing import Dict, List, Tuple, Optional, Any
 import logging
 
 # Add parent directory to path for imports
-sys.path.append(str(Path(__file__).parent.parent))
-from scripts.gpu.gpu_utils import (
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from hbt_analysis.utils.gpu import (
     configure_gpu_memory, 
     get_optimal_batch_size, 
     monitor_gpu_usage,
@@ -57,9 +57,10 @@ def project_path(*parts):
     filtered_parts = [part for part in parts if part is not None]
     return os.path.join(PROJECT_ROOT, *filtered_parts)
 
-# Configuration
-POPULATION_SIZE = 8  # Reduced for GPU memory efficiency
-GENERATIONS = 5
+# Configuration (defaults, can be overridden by command line)
+POPULATION_SIZE = 50
+GENERATIONS = 100
+EPOCHS = 50  # Default epochs, can be overridden by command line
 TOP_PERCENT = 0.125
 MUTATION_RATE = 0.1
 OUTPUT_DIR = project_path('data', 'optimization_results')
@@ -209,7 +210,7 @@ def validate_individual(individual):
     """Validate individual parameters."""
     return individual['state'] in RESERVED_SHOTS and individual['reserved_shot'] in RESERVED_SHOTS[individual['state']]
 
-def prepare_parameters(individual, gpu_manager: GPUOptimizationManager):
+def prepare_parameters(individual, gpu_manager: GPUOptimizationManager, data_type: str = 'ma2'):
     """Prepare parameters for script execution with GPU optimization."""
     # Get optimal batch size for this individual
     optimal_batch = gpu_manager.get_optimal_batch_size(individual)
@@ -217,7 +218,7 @@ def prepare_parameters(individual, gpu_manager: GPUOptimizationManager):
     params = {
         'individual_id': individual['id'],
         'state': int(individual['state']),
-        'selected_data_type': 'ma2',
+        'selected_data_type': data_type,
         'RESERVED_SHOT': int(individual['reserved_shot']),
         'EPOCH_NUM': int(individual['epochs']),
         'VALIDATION_SPLIT': float(individual['validation_split']),
@@ -279,7 +280,7 @@ def execute_script_gpu(input_script, parameters, individual_dir, gpu_manager: GP
 
 def evaluate_individual_worker_gpu(args):
     """Worker function for parallel evaluation with GPU support."""
-    individual, run_dir, existing_ids, gpu_manager = args
+    individual, run_dir, existing_ids, gpu_manager, data_type = args
     
     start = time.time()
     if not validate_individual(individual):
@@ -292,7 +293,7 @@ def evaluate_individual_worker_gpu(args):
         os.makedirs(individual_dir, exist_ok=True)
         
         # Prepare parameters
-        params = prepare_parameters(individual, gpu_manager)
+        params = prepare_parameters(individual, gpu_manager, data_type)
         
         # Save parameters
         params_path = os.path.join(individual_dir, "parameters.json")
@@ -353,7 +354,7 @@ def evaluate_individual_worker_gpu(args):
         logger.error(f"Exception for {individual['id']}: {e}")
         return individual, None
 
-def genetic_algorithm_gpu(use_gpu: bool = True, gpu_memory_limit: Optional[int] = None, run_dir: Optional[str] = None):
+def genetic_algorithm_gpu(use_gpu: bool = True, gpu_memory_limit: Optional[int] = None, run_dir: Optional[str] = None, data_type: str = 'ma2'):
     """GPU-optimized genetic algorithm."""
     
     # Initialize GPU manager
@@ -365,7 +366,7 @@ def genetic_algorithm_gpu(use_gpu: bool = True, gpu_memory_limit: Optional[int] 
     
     if run_dir is None:
         timestamp = time.strftime('%Y%m%d_%H%M%S')
-        run_dir = os.path.join(OUTPUT_DIR, f'run_gpu_{timestamp}')
+        run_dir = os.path.join(OUTPUT_DIR, f'run_gpu_{data_type}_{timestamp}')
     
     os.makedirs(run_dir, exist_ok=True)
     plot_dir = os.path.join(run_dir, 'plot_analysis')
@@ -395,7 +396,7 @@ def genetic_algorithm_gpu(use_gpu: bool = True, gpu_memory_limit: Optional[int] 
         # Evaluate population
         fitness = []
         for individual in population:
-            individual, mape = evaluate_individual_worker_gpu((individual, run_dir, existing_ids, gpu_manager))
+            individual, mape = evaluate_individual_worker_gpu((individual, run_dir, existing_ids, gpu_manager, data_type))
             if mape is not None:
                 fitness.append({'individual': individual, 'mape': mape})
                 existing_ids.add(individual['id'])
@@ -484,13 +485,38 @@ def genetic_algorithm_gpu(use_gpu: bool = True, gpu_memory_limit: Optional[int] 
 
 def main():
     """Main function with command-line interface."""
+    global POPULATION_SIZE, GENERATIONS, MUTATION_RATE, EPOCHS
+    
     parser = argparse.ArgumentParser(description='GPU-Optimized HBT Parameter Optimization')
     parser.add_argument('--use_gpu', action='store_true', help='Use GPU acceleration')
     parser.add_argument('--use_cpu', action='store_true', help='Force CPU execution')
     parser.add_argument('--gpu_memory_limit', type=int, help='GPU memory limit in MB')
     parser.add_argument('--run_dir', help='Specific run directory to resume')
+    parser.add_argument('--data_type', type=str, default='ma2', 
+                        help='Data type: ma1-ma4 (mode amplitude 1-4) or mp1-mp4 (mode phase 1-4) (default: ma2)')
+    parser.add_argument('--population_size', type=int, default=POPULATION_SIZE,
+                       help=f'Population size for genetic algorithm (default: {POPULATION_SIZE})')
+    parser.add_argument('--generations', type=int, default=GENERATIONS,
+                       help=f'Number of generations for genetic algorithm (default: {GENERATIONS})')
+    parser.add_argument('--mutation_rate', type=float, default=MUTATION_RATE,
+                       help=f'Mutation rate for genetic algorithm (default: {MUTATION_RATE})')
+    parser.add_argument('--crossover_rate', type=float, default=0.8,
+                       help='Crossover rate for genetic algorithm (default: 0.8)')
+    parser.add_argument('--state', type=int, default=2,
+                       help='State number (1, 2, or 3) (default: 2)')
+    parser.add_argument('--epochs', type=int, default=50,
+                       help='Number of epochs for each optimization run (default: 50)')
     
     args = parser.parse_args()
+    
+    # Update global configuration with command line arguments
+    POPULATION_SIZE = args.population_size
+    GENERATIONS = args.generations
+    MUTATION_RATE = args.mutation_rate
+    EPOCHS = args.epochs
+    
+    # Update PARAM_SPACE to cap epochs at the specified value
+    PARAM_SPACE['epochs'] = list(range(10, args.epochs + 1, 5))
     
     # Determine execution mode
     use_gpu = args.use_gpu or (not args.use_cpu)  # Default to GPU if available
@@ -500,7 +526,8 @@ def main():
     best_params, best_mape = genetic_algorithm_gpu(
         use_gpu=use_gpu,
         gpu_memory_limit=args.gpu_memory_limit,
-        run_dir=args.run_dir
+        run_dir=args.run_dir,
+        data_type=args.data_type
     )
     
     logger.info(f"Optimization completed successfully. Best MAPE: {best_mape:.2f}%")

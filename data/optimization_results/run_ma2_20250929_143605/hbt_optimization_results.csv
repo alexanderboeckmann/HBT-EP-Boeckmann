@@ -1,0 +1,5 @@
+generation,individual_id,notebook_type,state,reserved_shot,epochs,validation_split,activation_func,loss_func,optimizer_func,outlier_cutoff,num_conv2d_layers,num_dense_layers,conv2d_neurons,conv2d_size,dense_layer_neurons,max_pooling_size,mape
+1,874b173d-587f-4f85-affa-3f122c54be22,untrimmed,3,114458,10,0.3,tanh,mse,rmsprop,98.0,1,1,[8],"[(8, 8)]",[16],"(3, 3)",8.553741169056629
+1,1e2fc266-a787-453c-9fa8-347f3aa9a72a,untrimmed,1,119671,40,0.1,tanh,mse,sgd,82.0,1,2,[8],"[(3, 3)]","[16, 32]","(3, 3)",3.62005801710195
+2,67e74d2d-1de8-40eb-835b-df098fe23a44,untrimmed,1,119671,40,0.1,tanh,mse,sgd,82.0,1,2,[8],"[(3, 3)]","[16, 32]","(3, 3)",3.8849354929384816
+2,91328810-b8f7-4ece-b8b1-809cb58340aa,untrimmed,3,114458,10,0.3,tanh,mse,rmsprop,98.0,1,1,[8],"[(8, 8)]",[16],"(3, 3)",8.313127212146082

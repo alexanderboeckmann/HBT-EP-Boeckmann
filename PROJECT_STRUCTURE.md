@@ -157,6 +157,32 @@ scripts/
 └── visualization/          # Plotting scripts
 ```
 
+## Data Types Supported
+
+The analysis scripts support both mode amplitude and mode phase data:
+
+### Mode Amplitude (ma1-ma4)
+- `ma1`: Mode amplitude 1
+- `ma2`: Mode amplitude 2 (default)
+- `ma3`: Mode amplitude 3
+- `ma4`: Mode amplitude 4
+
+### Mode Phase (mp1-mp4)
+- `mp1`: Mode phase 1
+- `mp2`: Mode phase 2
+- `mp3`: Mode phase 3
+- `mp4`: Mode phase 4
+
+### Usage
+All analysis scripts accept a `--selected_data_type` parameter:
+```bash
+# Use mode amplitude 2 (default)
+python trimmed_HBT_analysis.py --state 2 --selected_data_type ma2
+
+# Use mode phase 3
+python trimmed_HBT_analysis.py --state 2 --selected_data_type mp3
+```
+
 ## Benefits
 
 1. **Cleaner Structure** - Related files grouped together
@@ -164,5 +190,6 @@ scripts/
 3. **Better Maintainability** - Clear separation of concerns
 4. **Centralized Docs** - All documentation in one place
 5. **Scalable** - Easy to add new features in appropriate directories
+6. **Flexible Data Types** - Support for both amplitude and phase analysis
 
 This organization makes your project much more professional and maintainable!

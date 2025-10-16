@@ -1,0 +1,3 @@
+generation,individual_id,notebook_type,state,reserved_shot,epochs,validation_split,activation_func,loss_func,optimizer_func,outlier_cutoff,num_conv2d_layers,num_dense_layers,conv2d_neurons,conv2d_size,dense_layer_neurons,max_pooling_size,early_stopping_patience,early_stopping_min_delta,mape
+1,339de649-b4bd-4967-bfd6-9b927c21df2a,untrimmed,3,119671,30,0.1,tanh,mae,adam,90.0,2,1,"[32, 64]","[(4, 4), (5, 5)]",[16],"(4, 4)",10,0.005,6.917454229877206
+1,801d8762-0124-4299-84e4-4094796347af,trimmed,1,119671,15,0.2,tanh,mae,rmsprop,98.0,2,1,"[8, 32]","[(5, 5), (3, 3)]",[16],"(2, 2)",20,0.01,15.415812898423829

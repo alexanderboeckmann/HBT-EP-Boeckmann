@@ -30,6 +30,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import argparse
 from typing import Dict, List, Tuple, Optional, Any
 import logging
+from tqdm import tqdm
+import psutil
 
 
 # Centralized project root and path utilities
@@ -39,9 +41,10 @@ def project_path(*parts):
     filtered_parts = [part for part in parts if part is not None]
     return os.path.join(PROJECT_ROOT, *filtered_parts)
 
-# Configuration
-POPULATION_SIZE = 2
-GENERATIONS = 2
+# Configuration (defaults, can be overridden by command line)
+POPULATION_SIZE = 50
+GENERATIONS = 100
+EPOCHS = 50  # Default epochs, can be overridden by command line
 TOP_PERCENT = 0.125
 MUTATION_RATE = 0.1
 OUTPUT_DIR = project_path('data', 'optimization_results')
@@ -49,7 +52,32 @@ CSV_FILENAME = 'hbt_optimization_results.csv'
 PLOT_FILENAME = 'hbt_optimization_progress.png'
 
 # Parallel execution settings
-MAX_WORKERS = min(mp.cpu_count(), POPULATION_SIZE)  # Use all available cores
+def get_optimal_workers():
+    """Calculate optimal number of workers based on system resources"""
+    import psutil
+    cpu_count = mp.cpu_count()
+    available_memory_gb = psutil.virtual_memory().available / (1024**3)
+    
+    # Conservative approach: limit workers based on available memory
+    # Assume each worker needs ~2GB of memory
+    memory_limited_workers = max(1, int(available_memory_gb / 2))
+    
+    # Don't use more than 80% of available cores to avoid system overload
+    cpu_limited_workers = max(1, int(cpu_count * 0.8))
+    
+    # Use the more restrictive limit
+    optimal_workers = min(cpu_limited_workers, memory_limited_workers, POPULATION_SIZE)
+    
+    return optimal_workers
+
+def monitor_memory_usage():
+    """Monitor current memory usage"""
+    import psutil
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    memory_gb = memory_info.rss / (1024**3)
+    return memory_gb
+
 
 # Hyperparameter space (same as original)
 PARAM_SPACE = {
@@ -80,6 +108,11 @@ RESERVED_SHOTS = {
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Initialize optimal workers after logger is set up
+MAX_WORKERS = get_optimal_workers()
+logger.info(f"System resources: {mp.cpu_count()} CPUs, {psutil.virtual_memory().available / (1024**3):.1f}GB RAM")
+logger.info(f"Optimal workers: {MAX_WORKERS}")
 
 
 def generate_individual():
@@ -146,12 +179,12 @@ def construct_paths(individual, run_dir, existing_ids):
         params_path
     )
 
-def prepare_parameters(individual):
+def prepare_parameters(individual, data_type='ma2'):
     """Prepare parameters for script execution (same as original)"""
     return {
         'individual_id': individual['id'],
         'state': int(individual['state']),
-        'selected_data_type': 'ma2',
+        'selected_data_type': data_type,
         'RESERVED_SHOT': int(individual['reserved_shot']),
         'EPOCH_NUM': int(individual['epochs']),
         'VALIDATION_SPLIT': float(individual['validation_split']),
@@ -227,7 +260,7 @@ def compute_mape(true, pred):
 
 def evaluate_individual_worker(args):
     """Worker function for parallel evaluation of individuals"""
-    individual, run_dir, existing_ids = args
+    individual, run_dir, existing_ids, data_type = args
     
     start = time.time()
     if not validate_individual(individual):
@@ -236,7 +269,7 @@ def evaluate_individual_worker(args):
     
     try:
         input_nb, output_nb, path_true, path_pred, individual_dir, params_path = construct_paths(individual, run_dir, existing_ids)
-        params = prepare_parameters(individual)
+        params = prepare_parameters(individual, data_type)
         
         with open(params_path, 'w') as f:
             json.dump(params, f, indent=4)
@@ -289,40 +322,53 @@ def evaluate_individual_worker(args):
         logger.error(f"Exception for {individual['id']}: {e}")
         return individual, None
 
-def evaluate_population_parallel(population, run_dir, existing_ids, max_workers=None):
-    """Evaluate population in parallel"""
+def evaluate_population_parallel(population, run_dir, existing_ids, max_workers=None, data_type='ma2'):
+    """Evaluate population in parallel with progress tracking"""
     if max_workers is None:
         max_workers = MAX_WORKERS
     
     logger.info(f"Evaluating {len(population)} individuals in parallel using {max_workers} workers")
     
     # Prepare arguments for workers
-    worker_args = [(individual, run_dir, existing_ids) for individual in population]
+    worker_args = [(individual, run_dir, existing_ids, data_type) for individual in population]
     
     fitness = []
-    completed_count = 0
+    successful_count = 0
+    failed_count = 0
     
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all jobs
         future_to_individual = {executor.submit(evaluate_individual_worker, args): args[0] 
                                for args in worker_args}
         
-        # Process completed jobs
-        for future in as_completed(future_to_individual):
-            individual, mape = future.result()
-            completed_count += 1
-            
-            # Always add the individual's ID to existing_ids, regardless of success/failure
-            # This prevents ID conflicts in future generations
-            existing_ids.add(individual['id'])
-            
-            if mape is not None:
-                fitness.append({'individual': individual, 'mape': mape})
-            
-            # Progress update
-            if completed_count % 5 == 0 or completed_count == len(population):
-                logger.info(f"Progress: {completed_count}/{len(population)} individuals completed")
+        # Process completed jobs with progress bar
+        with tqdm(total=len(population), desc="Evaluating individuals", unit="individual") as pbar:
+            for future in as_completed(future_to_individual):
+                individual, mape = future.result()
+                
+                # Always add the individual's ID to existing_ids, regardless of success/failure
+                # This prevents ID conflicts in future generations
+                existing_ids.add(individual['id'])
+                
+                if mape is not None:
+                    fitness.append({'individual': individual, 'mape': mape})
+                    successful_count += 1
+                    pbar.set_postfix({
+                        'Success': successful_count, 
+                        'Failed': failed_count,
+                        'Best MAPE': f"{min([f['mape'] for f in fitness]):.2f}%" if fitness else "N/A"
+                    })
+                else:
+                    failed_count += 1
+                    pbar.set_postfix({
+                        'Success': successful_count, 
+                        'Failed': failed_count,
+                        'Best MAPE': f"{min([f['mape'] for f in fitness]):.2f}%" if fitness else "N/A"
+                    })
+                
+                pbar.update(1)
     
+    logger.info(f"Evaluation complete: {successful_count} successful, {failed_count} failed")
     return fitness
 
 def crossover(parent1, parent2, existing_ids=None):
@@ -519,11 +565,11 @@ def create_analysis_plots(results_df, plot_dir):
         plt.savefig(os.path.join(plot_dir, f'mape_vs_{param}.png'))
         plt.close()
 
-def genetic_algorithm_parallel(run_dir=None, max_workers=None):
+def genetic_algorithm_parallel(run_dir=None, max_workers=None, data_type='ma2'):
     """Parallel genetic algorithm"""
     if run_dir is None:
         timestamp = time.strftime('%Y%m%d_%H%M%S')
-        run_dir = os.path.join(OUTPUT_DIR, f'run_{timestamp}')
+        run_dir = os.path.join(OUTPUT_DIR, f'run_parallel_{data_type}_{timestamp}')
     
     os.makedirs(run_dir, exist_ok=True)
     plot_dir = os.path.join(run_dir, 'plot_analysis')
@@ -557,8 +603,16 @@ def genetic_algorithm_parallel(run_dir=None, max_workers=None):
         logger.info(f"\nGeneration {generation}/{GENERATIONS} ({time.strftime('%H:%M:%S')})")
         generation_start = time.time()
         
+        # Monitor memory before evaluation
+        memory_before = monitor_memory_usage()
+        logger.info(f"Memory usage before evaluation: {memory_before:.2f}GB")
+        
         # Evaluate population in parallel
-        fitness = evaluate_population_parallel(population, run_dir, existing_ids, max_workers)
+        fitness = evaluate_population_parallel(population, run_dir, existing_ids, max_workers, data_type)
+        
+        # Monitor memory after evaluation
+        memory_after = monitor_memory_usage()
+        logger.info(f"Memory usage after evaluation: {memory_after:.2f}GB (Δ: {memory_after - memory_before:+.2f}GB)")
         
         if not fitness:
             logger.error("No valid models. Terminating.")
@@ -662,11 +716,36 @@ def genetic_algorithm_parallel(run_dir=None, max_workers=None):
 
 def main():
     """Main function with command-line interface"""
+    global POPULATION_SIZE, GENERATIONS, MUTATION_RATE, EPOCHS
+    
     parser = argparse.ArgumentParser(description='Parallel HBT Parameter Optimization')
+    parser.add_argument('--data_type', type=str, default='ma2', 
+                       help='Data type: ma1-ma4 (mode amplitude 1-4) or mp1-mp4 (mode phase 1-4) (default: ma2)')
     parser.add_argument('--max_workers', type=int, help='Maximum number of parallel workers')
     parser.add_argument('--run_dir', help='Specific run directory to resume')
+    parser.add_argument('--population_size', type=int, default=POPULATION_SIZE,
+                       help=f'Population size for genetic algorithm (default: {POPULATION_SIZE})')
+    parser.add_argument('--generations', type=int, default=GENERATIONS,
+                       help=f'Number of generations for genetic algorithm (default: {GENERATIONS})')
+    parser.add_argument('--mutation_rate', type=float, default=MUTATION_RATE,
+                       help=f'Mutation rate for genetic algorithm (default: {MUTATION_RATE})')
+    parser.add_argument('--crossover_rate', type=float, default=0.8,
+                       help='Crossover rate for genetic algorithm (default: 0.8)')
+    parser.add_argument('--state', type=int, default=2,
+                       help='State number (1, 2, or 3) (default: 2)')
+    parser.add_argument('--epochs', type=int, default=50,
+                       help='Number of epochs for each optimization run (default: 50)')
     
     args = parser.parse_args()
+    
+    # Update global configuration with command line arguments
+    POPULATION_SIZE = args.population_size
+    GENERATIONS = args.generations
+    MUTATION_RATE = args.mutation_rate
+    EPOCHS = args.epochs
+    
+    # Update PARAM_SPACE to cap epochs at the specified value
+    PARAM_SPACE['epochs'] = list(range(10, args.epochs + 1, 5))
     
     # Local execution only
     max_workers = args.max_workers or MAX_WORKERS
@@ -675,7 +754,8 @@ def main():
     
     best_params, best_mape = genetic_algorithm_parallel(
         run_dir=args.run_dir,
-        max_workers=max_workers
+        max_workers=max_workers,
+        data_type=args.data_type
     )
     
     logger.info(f"Optimization completed successfully. Best MAPE: {best_mape:.2f}%")

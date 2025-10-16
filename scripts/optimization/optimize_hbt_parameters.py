@@ -39,6 +39,7 @@ def project_path(*parts):
 # Configuration
 POPULATION_SIZE = 40  # Change to 100 if that's your intended size
 GENERATIONS = 10
+EPOCHS = 50  # Default epochs, can be overridden by command line
 TOP_PERCENT = 0.125
 MUTATION_RATE = 0.1
 OUTPUT_DIR = project_path('data', 'optimization_results')
@@ -98,7 +99,7 @@ def generate_individual():
 def validate_individual(individual):
     return individual['state'] in RESERVED_SHOTS and individual['reserved_shot'] in RESERVED_SHOTS[individual['state']]
 
-def construct_paths(individual, run_dir, existing_ids):
+def construct_paths(individual, run_dir, existing_ids, data_type='ma2'):
     individual_dir = os.path.join(run_dir, f"individual_{individual['id']}")
     # Check for ID conflict
     if individual['id'] in existing_ids and os.path.exists(individual_dir):
@@ -106,7 +107,7 @@ def construct_paths(individual, run_dir, existing_ids):
         individual['id'] = str(uuid.uuid4())
         individual_dir = os.path.join(run_dir, f"individual_{individual['id']}")
     os.makedirs(individual_dir, exist_ok=True)
-    base = f"results_{individual['notebook_type']}_state_{individual['state']}_ma2"
+    base = f"results_{individual['notebook_type']}_state_{individual['state']}_{data_type}"
     initial_input_nb = project_path('notebooks', f"{individual['notebook_type']}_HBT_analysis.py")
     initial_output_nb = os.path.join(individual_dir, f"{individual['id']}_output.ipynb")
     initial_path_true = os.path.join(individual_dir, f"{base}_true.npy")
@@ -121,11 +122,11 @@ def construct_paths(individual, run_dir, existing_ids):
         params_path
     )
 
-def prepare_parameters(individual):
+def prepare_parameters(individual, data_type='ma2'):
     return {
         'individual_id': individual['id'],
         'state': int(individual['state']),
-        'selected_data_type': 'ma2',
+        'selected_data_type': data_type,
         'RESERVED_SHOT': int(individual['reserved_shot']),
         'EPOCH_NUM': int(individual['epochs']),
         'VALIDATION_SPLIT': float(individual['validation_split']),
@@ -203,13 +204,13 @@ def print_summary(individual, mape, elapsed):
     print(f"SUCCESS {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} | "
           f"MAPE: {mape:.2f}% | {elapsed:.1f}s")
 
-def evaluate_individual(individual, run_dir, existing_ids):
+def evaluate_individual(individual, run_dir, existing_ids, data_type='ma2'):
     start = time.time()
     if not validate_individual(individual):
         print(f"Invalid state or shot for {individual['id']}")
         return None, None
-    input_nb, output_nb, path_true, path_pred, individual_dir, params_path = construct_paths(individual, run_dir, existing_ids)
-    params = prepare_parameters(individual)
+    input_nb, output_nb, path_true, path_pred, individual_dir, params_path = construct_paths(individual, run_dir, existing_ids, data_type)
+    params = prepare_parameters(individual, data_type)
     with open(params_path, 'w') as f:
         json.dump(params, f, indent=4)
     try:
@@ -414,10 +415,10 @@ def create_analysis_plots(results_df, plot_dir):
         plt.savefig(os.path.join(plot_dir, f'mape_vs_{param}.png'))
         plt.close()
 
-def genetic_algorithm(run_dir=None):
+def genetic_algorithm(run_dir=None, data_type='ma2'):
     if run_dir is None:
         timestamp = time.strftime('%Y%m%d_%H%M%S')
-        run_dir = os.path.join(OUTPUT_DIR, f'run_{timestamp}')
+        run_dir = os.path.join(OUTPUT_DIR, f'run_{data_type}_{timestamp}')
     os.makedirs(run_dir, exist_ok=True)
     plot_dir = os.path.join(run_dir, 'plot_analysis')
     os.makedirs(plot_dir, exist_ok=True)
@@ -448,7 +449,7 @@ def genetic_algorithm(run_dir=None):
         for i, individual in enumerate(population, 1):
             print(f"  [{i:2d}/{POPULATION_SIZE}] {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} ({individual['epochs']}ep) | ", end="", flush=True)
             try:
-                _, mape = evaluate_individual(individual, run_dir, existing_ids)
+                _, mape = evaluate_individual(individual, run_dir, existing_ids, data_type)
             except Exception as e:
                 print(f"ERROR: {e}")
                 continue
@@ -542,6 +543,49 @@ def genetic_algorithm(run_dir=None):
     print(f"Best individual: {best_individual_dir}")
     return best_params, best_mape
 
-if __name__ == "__main__":
+def main():
+    """Main function with command-line interface"""
+    global POPULATION_SIZE, GENERATIONS, MUTATION_RATE, OUTPUT_DIR, EPOCHS
+    
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='HBT Parameter Optimization')
+    parser.add_argument('--data_type', type=str, default='ma2', 
+                       help='Data type: ma1-ma4 (mode amplitude 1-4) or mp1-mp4 (mode phase 1-4) (default: ma2)')
+    parser.add_argument('--state', type=int, default=2, 
+                       help='State number (1, 2, or 3) (default: 2)')
+    parser.add_argument('--epochs', type=int, default=50,
+                       help='Number of epochs for each optimization run (default: 50)')
+    parser.add_argument('--population_size', type=int, default=50, 
+                       help='Population size for genetic algorithm (default: 50)')
+    parser.add_argument('--generations', type=int, default=100, 
+                       help='Number of generations for genetic algorithm (default: 100)')
+    parser.add_argument('--mutation_rate', type=float, default=0.1, 
+                       help='Mutation rate for genetic algorithm (default: 0.1)')
+    parser.add_argument('--crossover_rate', type=float, default=0.8, 
+                       help='Crossover rate for genetic algorithm (default: 0.8)')
+    parser.add_argument('--output_dir', type=str, 
+                       help='Output directory for optimization results')
+    
+    args = parser.parse_args()
+    
+    # Update global configuration
+    POPULATION_SIZE = args.population_size
+    GENERATIONS = args.generations
+    MUTATION_RATE = args.mutation_rate
+    EPOCHS = args.epochs
+    
+    # Update PARAM_SPACE to cap epochs at the specified value
+    PARAM_SPACE['epochs'] = list(range(10, args.epochs + 1, 5))
+    
+    if args.output_dir:
+        OUTPUT_DIR = args.output_dir
+    
     # Pass None to create a new timestamped run directory
-    best_params, best_mape = genetic_algorithm(None)
+    best_params, best_mape = genetic_algorithm(None, args.data_type)
+    
+    return best_params, best_mape
+
+
+if __name__ == "__main__":
+    main()
