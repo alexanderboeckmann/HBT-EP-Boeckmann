@@ -1,7 +1,7 @@
 """
 GPU Utilities for HBT Analysis
 
-This module provides GPU configuration and utilities for running HBT analysis
+This module provides GPU configuration and utilities for running analysis
 on GPU-enabled servers. It includes memory management, device detection,
 and performance monitoring.
 """
