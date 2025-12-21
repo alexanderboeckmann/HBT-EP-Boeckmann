@@ -18,12 +18,14 @@ Key features:
 import numpy as np
 import os
 import glob
+import json
+import time
 from PIL import Image
 from typing import Dict, List, Tuple, Optional
 import tensorflow as tf
 
 from .base import HBTAnalysisBase
-from ..utils.camera_cache import load_center32_frames_full
+from ..utils.camera_cache import load_center32_frames_full, CameraCacheStats
 
 
 class HBTAnalysisTrimmed(HBTAnalysisBase):
@@ -110,6 +112,7 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
         end_cutoff: int,
         max_pixel_value: float = None,
         shot_num: Optional[int] = None,
+        cache_stats: Optional[CameraCacheStats] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
         """Process TIFF images in a folder, cropping to 32x32 and normalizing (with disk cache)."""
         if max_pixel_value is None:
@@ -124,6 +127,7 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
             folder_path=folder_path,
             cache_file=cache_file,
             max_pixel_value=max_pixel_value,
+            stats=cache_stats,
         )
 
         end_cutoff = min(end_cutoff, frames_full.shape[0])
@@ -137,7 +141,8 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
         return shot_2d, shot_2d, shot_2d.reshape(len(shot_2d), -1), len(shot_2d)
     
     def process_all_shots(self, shot_list: List[int], initial_cutoff_indices: List[int], 
-                         end_cutoff_indices: List[int], frame_counts: List[int]) -> Tuple:
+                         end_cutoff_indices: List[int], frame_counts: List[int],
+                         cache_stats: Optional[CameraCacheStats] = None) -> Tuple:
         """Process all shots, returning 2D, cut, flat data, valid shots, and frame counts."""
         training_data_2D, cut_training_data_2D, flat_training_data = [], [], []
         valid_shots, actual_frame_counts = [], []
@@ -152,7 +157,11 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
                 continue
             try:
                 shot_2d, cut_2d, flat_data, actual_frames = self.process_shot_data(
-                    folder_path, initial_cutoff_indices[i], end_cutoff_indices[i], shot_num=shot
+                    folder_path,
+                    initial_cutoff_indices[i],
+                    end_cutoff_indices[i],
+                    shot_num=shot,
+                    cache_stats=cache_stats,
                 )
                 if actual_frames > 0:
                     training_data_2D.append(shot_2d)
@@ -269,6 +278,8 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
     def run_analysis(self, output_dir: Optional[str] = None) -> Dict:
         """Run the complete trimmed analysis pipeline."""
         print(f"Starting trimmed HBT analysis for state {self.config['state']}")
+        overall_start = time.perf_counter()
+        cache_stats = CameraCacheStats()
         
         # Load and process IP data
         print("Loading IP data...")
@@ -288,9 +299,11 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
         
         # Process all shots
         print("Processing shot data...")
+        t0 = time.perf_counter()
         training_data_2D, cut_training_data_2D, flat_training_data, self.valid_shots, actual_frame_counts = self.process_all_shots(
-            self.shot_list, initial_cutoff_indices, end_cutoff_indices, frame_counts
+            self.shot_list, initial_cutoff_indices, end_cutoff_indices, frame_counts, cache_stats=cache_stats
         )
+        camera_processing_seconds = time.perf_counter() - t0
 
         if not self.valid_shots:
             raise ValueError(
@@ -320,7 +333,11 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
                 if folder_path is None:
                     raise ValueError("No camera frames directory found for reserved shot.")
                 shot_2d, cut_2d, flat_data, actual_frames = self.process_shot_data(
-                    folder_path, initial_cutoff_indices[shot_idx], end_cutoff_indices[shot_idx], shot_num=self.config['reserved_shot']
+                    folder_path,
+                    initial_cutoff_indices[shot_idx],
+                    end_cutoff_indices[shot_idx],
+                    shot_num=self.config['reserved_shot'],
+                    cache_stats=cache_stats,
                 )
                 print(f"RESERVED_SHOT {self.config['reserved_shot']}: actual_frames={actual_frames}")
                 reserved_shot_data_2d = shot_2d
@@ -423,7 +440,9 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
             model.summary()
         
         print("Training model...")
+        train_start = time.perf_counter()
         history = self.train_model(model, training_vector, target_vector)
+        train_seconds = time.perf_counter() - train_start
         
         # Evaluate model
         print("Evaluating model...")
@@ -447,6 +466,35 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
             )
         
         print("Trimmed analysis complete!")
+
+        # Persist cache stats + coarse timing so we can verify cache effectiveness.
+        stats_out_dir = output_dir or self.config.get('output_dir')
+        if stats_out_dir:
+            try:
+                os.makedirs(stats_out_dir, exist_ok=True)
+                payload = {
+                    "notebook_type": "trimmed",
+                    "state": int(self.config["state"]),
+                    "selected_data_type": str(self.config["selected_data_type"]),
+                    "camera_cache": {
+                        "hits": int(cache_stats.hits),
+                        "misses": int(cache_stats.misses),
+                        "saves": int(cache_stats.saves),
+                        "load_seconds": float(cache_stats.load_seconds),
+                        "build_seconds": float(cache_stats.build_seconds),
+                        "cache_root": self.project_path("data", "cache", "camera_center32_full"),
+                    },
+                    "timing_seconds": {
+                        "camera_processing_seconds": float(camera_processing_seconds),
+                        "train_seconds": float(train_seconds),
+                        "overall_seconds": float(time.perf_counter() - overall_start),
+                    },
+                }
+                with open(os.path.join(stats_out_dir, "camera_cache_stats.json"), "w") as f:
+                    json.dump(payload, f, indent=2)
+                print(f"Wrote camera cache stats to {self.pretty_path(os.path.join(stats_out_dir, 'camera_cache_stats.json'))}")
+            except Exception as e:
+                print(f"Warning: failed to write camera cache stats: {e}")
         
         return {
             'model': model,

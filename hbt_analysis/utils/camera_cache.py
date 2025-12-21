@@ -14,11 +14,28 @@ from __future__ import annotations
 import os
 import glob
 import tempfile
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
 from PIL import Image
+
+
+@dataclass
+class CameraCacheStats:
+    """
+    Lightweight stats for camera frame caching.
+
+    This is meant for instrumentation/verification, not correctness.
+    """
+
+    hits: int = 0
+    misses: int = 0
+    load_seconds: float = 0.0
+    build_seconds: float = 0.0
+    saves: int = 0
 
 
 def _center_crop_32(img: np.ndarray) -> np.ndarray:
@@ -65,6 +82,7 @@ def load_center32_frames_full(
     cache_file: Optional[str],
     max_pixel_value: float,
     dtype_on_disk: np.dtype = np.float16,
+    stats: Optional[CameraCacheStats] = None,
 ) -> np.ndarray:
     """
     Load cached full frame stack for a shot, or build it from TIFFs.
@@ -72,9 +90,14 @@ def load_center32_frames_full(
     Returns float32 array shaped (n_frames, 32, 32).
     """
     if cache_file and os.path.exists(cache_file):
+        t0 = time.perf_counter()
         arr = np.load(cache_file)
+        if stats is not None:
+            stats.hits += 1
+            stats.load_seconds += time.perf_counter() - t0
         return arr.astype(np.float32, copy=False)
 
+    t0 = time.perf_counter()
     frame_files: list[str] = []
     for pat in ("*.tif", "*.tiff", "*.png"):
         frame_files.extend(glob.glob(os.path.join(folder_path, pat)))
@@ -91,6 +114,11 @@ def load_center32_frames_full(
     arr = np.asarray(frames, dtype=np.float32)
     if cache_file:
         _atomic_save_npy(cache_file, arr.astype(dtype_on_disk, copy=False))
+        if stats is not None:
+            stats.saves += 1
+    if stats is not None:
+        stats.misses += 1
+        stats.build_seconds += time.perf_counter() - t0
     return arr
 
 
@@ -100,6 +128,7 @@ def load_center32_frames_sampled(
     max_pixel_value: float,
     sample_indices: Sequence[int],
     dtype_on_disk: np.dtype = np.float16,
+    stats: Optional[CameraCacheStats] = None,
 ) -> np.ndarray:
     """
     Load cached sampled frame stack for a shot, or build it by reading only the sampled TIFFs.
@@ -107,9 +136,14 @@ def load_center32_frames_sampled(
     Returns float32 array shaped (len(sample_indices), 32, 32).
     """
     if cache_file and os.path.exists(cache_file):
+        t0 = time.perf_counter()
         arr = np.load(cache_file)
+        if stats is not None:
+            stats.hits += 1
+            stats.load_seconds += time.perf_counter() - t0
         return arr.astype(np.float32, copy=False)
 
+    t0 = time.perf_counter()
     frame_files: list[str] = []
     for pat in ("*.tif", "*.tiff", "*.png"):
         frame_files.extend(glob.glob(os.path.join(folder_path, pat)))
@@ -132,6 +166,11 @@ def load_center32_frames_sampled(
     arr = np.asarray(frames, dtype=np.float32)
     if cache_file:
         _atomic_save_npy(cache_file, arr.astype(dtype_on_disk, copy=False))
+        if stats is not None:
+            stats.saves += 1
+    if stats is not None:
+        stats.misses += 1
+        stats.build_seconds += time.perf_counter() - t0
     return arr
 
 

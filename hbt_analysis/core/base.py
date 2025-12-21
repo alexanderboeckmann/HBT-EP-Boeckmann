@@ -298,7 +298,10 @@ class HBTAnalysisBase:
     def evaluate_model(self, model: tf.keras.Model, test_data: np.ndarray, 
                       test_labels: np.ndarray) -> np.ndarray:
         """Evaluate model on test data."""
-        predictions = model.predict(test_data)
+        # Keras may emit progress bars with ANSI control sequences (bad for per-worker log files).
+        # Default behavior stays interactive (verbose=1) unless callers explicitly silence via config.
+        predict_verbose = int(self.config.get('predict_verbose', self.config.get('fit_verbose', 1)))
+        predictions = model.predict(test_data, verbose=predict_verbose)
         return predictions
     
     def compute_reserved_shot_predictions(self, model: tf.keras.Model, 
