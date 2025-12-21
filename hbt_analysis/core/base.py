@@ -30,13 +30,6 @@ import argparse
 from typing import Dict, List, Tuple, Optional, Union
 import sys
 
-from ..utils.gpu import (
-    configure_gpu_memory, 
-    get_optimal_batch_size, 
-    create_gpu_optimized_model,
-    setup_gpu_environment
-)
-
 
 class HBTAnalysisBase:
     """
@@ -57,7 +50,10 @@ class HBTAnalysisBase:
             config: Dictionary containing analysis configuration parameters
         """
         self.config = config
-        self.project_root = str(Path(__file__).resolve().parents[3])
+        # Repo root should be the directory that contains `hbt_analysis/`, `data/`, `scripts/`, etc.
+        # This file lives at: <repo_root>/hbt_analysis/core/base.py
+        # Using parents[2] keeps all data paths inside this repo (not the parent PlasmaLab folder).
+        self.project_root = str(Path(__file__).resolve().parents[2])
         
         # Initialize shot paths
         self.shot_paths = {
@@ -77,11 +73,7 @@ class HBTAnalysisBase:
         
         # Initialize paths
         self._initialize_paths()
-        
-        # GPU configuration
-        self.use_gpu = config.get('use_gpu', False)
-        self.gpu_memory_limit = config.get('gpu_memory_limit', None)
-        self._setup_gpu()
+        # CPU-only execution (GPU support removed)
         
         # Initialize shot lists
         self.shot_list = self._get_shot_list(config['state'])
@@ -98,27 +90,78 @@ class HBTAnalysisBase:
             self.shot_paths[shot_type]['hbt_path'] = self.project_path('data', 'shots', 'new' if 'new' in shot_type else 'old')
             self.shot_paths[shot_type]['ip_path'] = self.project_path('data', 'shots', 'new' if 'new' in shot_type else 'old')
     
-    def _setup_gpu(self):
-        """Setup GPU configuration if requested."""
-        if self.use_gpu:
-            print("Configuring GPU environment...")
-            gpu_config = configure_gpu_memory(
-                gpu_memory_limit=self.gpu_memory_limit,
-                allow_memory_growth=True
-            )
-            
-            if gpu_config.get('gpu_available', False):
-                print(f"GPU setup successful: {gpu_config['device_count']} GPU(s) available")
-                setup_gpu_environment()
-            else:
-                print("GPU not available, falling back to CPU")
-                self.use_gpu = False
-        else:
-            print("Using CPU execution")
-    
     def project_path(self, *parts):
         """Create absolute path from project root."""
         return os.path.join(self.project_root, *parts)
+
+    def pretty_path(self, path: str) -> str:
+        """
+        Format a path for logs.
+
+        If `path` is within this repo, return: "<repo_name>/<relative_path>".
+        Otherwise, return the original path string.
+        """
+        try:
+            p = Path(path).resolve()
+            root = Path(self.project_root).resolve()
+            rel = p.relative_to(root)
+            return f"{root.name}/{rel.as_posix()}"
+        except Exception:
+            return str(path)
+
+    def _has_frame_files(self, folder_path: str) -> bool:
+        """Return True if folder contains any supported frame files."""
+        patterns = ("*.tif", "*.tiff", "*.png")
+        for pat in patterns:
+            if glob.glob(os.path.join(folder_path, pat)):
+                return True
+        return False
+
+    def resolve_camera_frames_dir(
+        self,
+        shot_num: int,
+        preferred_camera: str = "CAM-26731",
+        preferred_subdirs: Tuple[str, ...] = ("tiff", "png"),
+    ) -> str:
+        """
+        Resolve the directory containing camera frames for a shot.
+
+        Expected layouts (both are supported):
+        - <data_path>/<shot>/<CAM-xxxxx>/tiff/*.tiff
+        - <data_path>/<shot>/<CAM-xxxxx>/png/*.png
+
+        Returns the first directory that exists and contains frames.
+        """
+        data_path, _, _ = self.get_paths_for_shot(shot_num)
+        shot_dir = os.path.join(data_path, str(shot_num))
+        if not os.path.isdir(shot_dir):
+            raise FileNotFoundError(f"Shot directory not found: {shot_dir}")
+
+        # Prefer a specific camera, but fall back to any CAM-* directory.
+        cam_dirs: List[str] = []
+        preferred_dir = os.path.join(shot_dir, preferred_camera)
+        if os.path.isdir(preferred_dir):
+            cam_dirs.append(preferred_dir)
+        for entry in sorted(os.listdir(shot_dir)):
+            if entry.startswith("CAM-"):
+                full = os.path.join(shot_dir, entry)
+                if full not in cam_dirs and os.path.isdir(full):
+                    cam_dirs.append(full)
+
+        # If no CAM directories exist, allow frames directly under shot_dir/<subdir>.
+        if not cam_dirs:
+            cam_dirs = [shot_dir]
+
+        for cam_dir in cam_dirs:
+            for sub in preferred_subdirs:
+                frames_dir = os.path.join(cam_dir, sub)
+                if os.path.isdir(frames_dir) and self._has_frame_files(frames_dir):
+                    return frames_dir
+
+        raise FileNotFoundError(
+            f"No camera frames found for shot {shot_num}. "
+            f"Searched under {shot_dir} for subdirs {preferred_subdirs} with tif/tiff/png files."
+        )
     
     def _get_shot_list(self, state: int) -> List[int]:
         """Get shot list based on state."""
@@ -200,53 +243,31 @@ class HBTAnalysisBase:
             if isinstance(self.config['max_pooling_size'], str) else tuple(int(x) for x in self.config['max_pooling_size'])
         )
         
-        if self.use_gpu:
-            # Create GPU-optimized model
-            model = create_gpu_optimized_model(
-                input_shape=(32, 32, 1),
-                conv2d_neurons=self.config['conv2d_neurons'],
-                conv2d_size=conv2d_size,
-                dense_layer_neurons=self.config['dense_layer_neurons'],
-                num_conv2d_layers=self.config['num_conv2d_layers'],
-                num_dense_layers=self.config['num_dense_layers'],
-                max_pooling_size=max_pooling_size,
-                activation_func=self.config['activation_func'],
-                loss_func=self.config['loss_func'],
-                optimizer_func=self.config['optimizer_func']
-            )
-            
-            # Optimize batch size for GPU
-            if self.config.get('batch_size', 32) == 32:
-                optimal_batch = get_optimal_batch_size(model, (32, 32, 1))
-                self.config['batch_size'] = min(optimal_batch, 256)
-                print(f"Optimized batch size for GPU: {self.config['batch_size']}")
-        else:
-            # Create standard CPU model
-            model = tf.keras.models.Sequential()
-            model.add(tf.keras.layers.InputLayer(shape=(32, 32, 1)))
+        model = tf.keras.models.Sequential()
+        model.add(tf.keras.layers.InputLayer(shape=(32, 32, 1)))
 
-            for i in range(self.config['num_conv2d_layers']):
-                model.add(tf.keras.layers.Conv2D(
-                    self.config['conv2d_neurons'][i], 
-                    conv2d_size[i], 
-                    padding='same', 
-                    activation=self.config['activation_func']
-                ))
-                model.add(tf.keras.layers.MaxPooling2D(max_pooling_size, padding='same'))
+        for i in range(self.config['num_conv2d_layers']):
+            model.add(tf.keras.layers.Conv2D(
+                self.config['conv2d_neurons'][i],
+                conv2d_size[i],
+                padding='same',
+                activation=self.config['activation_func']
+            ))
+            model.add(tf.keras.layers.MaxPooling2D(max_pooling_size, padding='same'))
 
-            model.add(tf.keras.layers.Flatten())
-            for i in range(self.config['num_dense_layers']):
-                model.add(tf.keras.layers.Dense(
-                    self.config['dense_layer_neurons'][i], 
-                    activation=self.config['activation_func']
-                ))
-                model.add(tf.keras.layers.Dropout(0.2))
+        model.add(tf.keras.layers.Flatten())
+        for i in range(self.config['num_dense_layers']):
+            model.add(tf.keras.layers.Dense(
+                self.config['dense_layer_neurons'][i],
+                activation=self.config['activation_func']
+            ))
+            model.add(tf.keras.layers.Dropout(0.2))
 
-            model.add(tf.keras.layers.Dense(1))
-            model.compile(
-                optimizer=self.config['optimizer_func'], 
-                loss=self.config['loss_func']
-            )
+        model.add(tf.keras.layers.Dense(1))
+        model.compile(
+            optimizer=self.config['optimizer_func'],
+            loss=self.config['loss_func']
+        )
         
         return model
     
@@ -256,7 +277,9 @@ class HBTAnalysisBase:
         early_stop = keras.callbacks.EarlyStopping(
             monitor='val_loss', 
             patience=self.config.get('early_stopping_patience', 20),
-            min_delta=self.config.get('early_stopping_min_delta', 0.01)
+            min_delta=self.config.get('early_stopping_min_delta', 0.01),
+            mode='min',
+            restore_best_weights=True
         )
         
         history = model.fit(
@@ -264,7 +287,9 @@ class HBTAnalysisBase:
             epochs=self.config['epoch_num'],
             validation_split=self.config['validation_split'],
             batch_size=self.config.get('batch_size', 32),
-            verbose=1,
+            # Default to verbose=1 for interactive/sequential runs, but allow callers
+            # (e.g. parallel optimization workers) to silence Keras progress output.
+            verbose=int(self.config.get('fit_verbose', 1)),
             callbacks=[early_stop]
         )
         
@@ -305,15 +330,27 @@ class HBTAnalysisBase:
         np.save(os.path.join(output_dir, f'results_{self.notebook_type}_state_{self.config["state"]}_{self.config["selected_data_type"]}_pred.npy'), predictions)
         np.save(os.path.join(output_dir, f'results_{self.notebook_type}_state_{self.config["state"]}_{self.config["selected_data_type"]}_time.npy'), time_data)
         
-        print(f"Results saved to {output_dir}")
+        print(f"Results saved to {self.pretty_path(output_dir)}")
     
-    def save_normalization_info(self, ma_norm: float, outlier_threshold: float):
-        """Save normalization information."""
-        pred_dir = self.project_path('data', 'predictions')
-        os.makedirs(pred_dir, exist_ok=True)
-        
+    def save_normalization_info(
+        self,
+        ma_norm: float,
+        outlier_threshold: float,
+        output_dir: Optional[str] = None,
+    ):
+        """
+        Save normalization information.
+
+        Important for parallel optimization: avoid writing to a shared, fixed filename.
+        If `output_dir` is provided, we write the normalization file into that directory
+        (typically the per-individual output folder).
+        """
+        # Prefer explicit output_dir; then config['output_dir']; otherwise fall back to repo predictions dir.
+        target_dir = output_dir or self.config.get('output_dir') or self.project_path('data', 'predictions')
+        os.makedirs(target_dir, exist_ok=True)
+
         normalization_filename = os.path.join(
-            pred_dir, 
+            target_dir,
             f"normalization_{self.notebook_type}_state_{self.config['state']}.npz"
         )
         
@@ -322,7 +359,7 @@ class HBTAnalysisBase:
                  outlier_threshold=outlier_threshold,
                  selected_data_type=self.config['selected_data_type'])
         
-        print(f"Saved normalization info to {normalization_filename}")
+        print(f"Saved normalization info to {self.pretty_path(normalization_filename)}")
     
     def run_analysis(self, output_dir: Optional[str] = None) -> Dict:
         """
@@ -349,7 +386,8 @@ class HBTAnalysisBase:
         parser.add_argument('--output_dir', type=str, help='Output directory for saving results')
         
         # Training parameters
-        parser.add_argument('--EPOCH_NUM', type=int, default=15, help='Number of epochs (default: 15)')
+        # Epochs are treated as a maximum; training typically ends earlier via early stopping.
+        parser.add_argument('--EPOCH_NUM', type=int, default=50, help='Max epochs (default: 50; early stopping usually ends earlier)')
         parser.add_argument('--VALIDATION_SPLIT', type=float, default=0.2, help='Validation split (default: 0.2)')
         parser.add_argument('--BATCH_SIZE', type=int, default=32, help='Batch size (default: 32)')
         
@@ -372,8 +410,7 @@ class HBTAnalysisBase:
         parser.add_argument('--OUTLIER_CUTOFF', type=float, default=99, help='Outlier cutoff percentile (default: 99)')
         
         # GPU options
-        parser.add_argument('--USE_GPU', action='store_true', help='Use GPU acceleration')
-        parser.add_argument('--GPU_MEMORY_LIMIT', type=int, help='GPU memory limit in MB')
+        # GPU options removed (CPU-only)
         
         return parser
     
@@ -399,8 +436,6 @@ class HBTAnalysisBase:
             'max_pooling_size': ast.literal_eval(args.MAX_POOLING_SIZE),
             'early_stopping_patience': args.EARLY_STOPPING_PATIENCE,
             'early_stopping_min_delta': args.EARLY_STOPPING_MIN_DELTA,
-            'use_gpu': args.USE_GPU,
-            'gpu_memory_limit': args.GPU_MEMORY_LIMIT,
             'output_dir': args.output_dir
         }
         

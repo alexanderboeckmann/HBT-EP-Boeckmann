@@ -15,7 +15,7 @@ setup(
     version="1.0.0",
     author="HBT-EP Analysis Team",
     author_email="your-email@example.com",
-    description="A comprehensive package for HBT-EP analysis using machine learning and GPU optimization",
+    description="A comprehensive package for HBT-EP analysis using machine learning (CPU-only)",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/your-username/HBT-EP-Boeckmann",
@@ -40,11 +40,12 @@ setup(
         "Pillow>=8.0.0",
         "matplotlib>=3.5.0",
         "scikit-learn>=1.0.0",
+        "pandas>=1.3.0",
+        "seaborn>=0.11.0",
+        "tqdm>=4.62.0",
+        "psutil>=5.8.0",
     ],
     extras_require={
-        "gpu": [
-            "tensorflow-gpu>=2.8.0",
-        ],
         "dev": [
             "pytest>=6.0.0",
             "black>=21.0.0",

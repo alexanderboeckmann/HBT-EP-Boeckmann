@@ -23,10 +23,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import subprocess
 import shutil
 import random
 from pathlib import Path
+import sys
+
+# Allow importing the package when running this script directly
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from hbt_analysis import HBTAnalysisTrimmed, HBTAnalysisUntrimmed
 
 # Centralized project root and path utilities
 PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
@@ -36,8 +41,18 @@ def project_path(*parts):
     filtered_parts = [part for part in parts if part is not None]
     return os.path.join(PROJECT_ROOT, *filtered_parts)
 
+def pretty_path(path: str) -> str:
+    """Render repo-local paths as '<repo_name>/<relative>' for cleaner logs."""
+    try:
+        p = Path(path).resolve()
+        root = Path(PROJECT_ROOT).resolve()
+        rel = p.relative_to(root)
+        return f"{root.name}/{rel.as_posix()}"
+    except Exception:
+        return str(path)
+
 # Configuration
-POPULATION_SIZE = 40  # Change to 100 if that's your intended size
+POPULATION_SIZE = 50
 GENERATIONS = 10
 EPOCHS = 50  # Default epochs, can be overridden by command line
 TOP_PERCENT = 0.125
@@ -107,20 +122,8 @@ def construct_paths(individual, run_dir, existing_ids, data_type='ma2'):
         individual['id'] = str(uuid.uuid4())
         individual_dir = os.path.join(run_dir, f"individual_{individual['id']}")
     os.makedirs(individual_dir, exist_ok=True)
-    base = f"results_{individual['notebook_type']}_state_{individual['state']}_{data_type}"
-    initial_input_nb = project_path('notebooks', f"{individual['notebook_type']}_HBT_analysis.py")
-    initial_output_nb = os.path.join(individual_dir, f"{individual['id']}_output.ipynb")
-    initial_path_true = os.path.join(individual_dir, f"{base}_true.npy")
-    initial_path_pred = os.path.join(individual_dir, f"{base}_pred.npy")
     params_path = os.path.join(individual_dir, "parameters.json")
-    return (
-        initial_input_nb,
-        initial_output_nb,
-        initial_path_true,
-        initial_path_pred,
-        individual_dir,
-        params_path
-    )
+    return individual_dir, params_path
 
 def prepare_parameters(individual, data_type='ma2'):
     return {
@@ -142,39 +145,39 @@ def prepare_parameters(individual, data_type='ma2'):
         'MAX_POOLING_SIZE': individual['max_pooling_size']
     }
 
-def execute_script(input_script, parameters, individual_dir):
-    os.makedirs(individual_dir, exist_ok=True)
-    try:
-        # Build command line arguments from parameters
-        cmd = ['python', input_script]
-        for key, value in parameters.items():
-            if key != 'individual_id':  # Skip internal parameter
-                cmd.extend([f'--{key}', str(value)])
-        
-        # Add output directory parameter
-        cmd.extend(['--output_dir', individual_dir])
-        
-        # Execute the script
-        result = subprocess.run(
-            cmd,
-            cwd=individual_dir,
-            capture_output=True,
-            text=True,
-            timeout=3600  # 1 hour timeout
-        )
-        
-        if result.returncode != 0:
-            print(f"Script execution failed for ID {parameters.get('individual_id', 'unknown')}: {result.stderr}")
-            raise RuntimeError(f"Script execution failed: {result.stderr}")
-        else:
-            print(f"Successfully executed script for ID {parameters.get('individual_id', 'unknown')}")
-            
-    except subprocess.TimeoutExpired:
-        print(f"Script execution timed out for ID {parameters.get('individual_id', 'unknown')}")
-        raise
-    except Exception as e:
-        print(f"Script execution failed for ID {parameters.get('individual_id', 'unknown')}: {e}")
-        raise
+def run_analysis_for_individual(individual, data_type: str, output_dir: str):
+    """Run analysis in-process (no subprocess/notebook runner)."""
+    config = {
+        'state': int(individual['state']),
+        'selected_data_type': data_type,
+        'reserved_shot': int(individual['reserved_shot']),
+        'epoch_num': int(individual['epochs']),
+        'validation_split': float(individual['validation_split']),
+        'activation_func': individual['activation_func'],
+        'loss_func': individual['loss_func'],
+        'optimizer_func': individual['optimizer_func'],
+        'outlier_cutoff': float(individual['outlier_cutoff']),
+        'num_conv2d_layers': int(individual['num_conv2d_layers']),
+        'num_dense_layers': int(individual['num_dense_layers']),
+        'conv2d_neurons': individual['conv2d_neurons'],
+        'conv2d_size': individual['conv2d_size'],
+        'dense_layer_neurons': individual['dense_layer_neurons'],
+        'max_pooling_size': individual['max_pooling_size'],
+        # Keep defaults consistent with the analysis classes
+        'batch_size': 32,
+        # Stop quickly once validation loss stops improving meaningfully
+        'early_stopping_patience': 8,
+        'early_stopping_min_delta': 0.001,
+    }
+
+    if individual['notebook_type'] == 'trimmed':
+        analysis = HBTAnalysisTrimmed(config)
+    elif individual['notebook_type'] == 'untrimmed':
+        analysis = HBTAnalysisUntrimmed(config)
+    else:
+        raise ValueError(f"Unknown notebook_type: {individual['notebook_type']}")
+
+    analysis.run_analysis(output_dir=output_dir)
 
 def load_result_arrays(true_path, pred_path):
     true = np.load(true_path) if os.path.exists(true_path) else None
@@ -209,15 +212,12 @@ def evaluate_individual(individual, run_dir, existing_ids, data_type='ma2'):
     if not validate_individual(individual):
         print(f"Invalid state or shot for {individual['id']}")
         return None, None
-    input_nb, output_nb, path_true, path_pred, individual_dir, params_path = construct_paths(individual, run_dir, existing_ids, data_type)
+    individual_dir, params_path = construct_paths(individual, run_dir, existing_ids, data_type)
     params = prepare_parameters(individual, data_type)
     with open(params_path, 'w') as f:
         json.dump(params, f, indent=4)
     try:
-        if not os.path.exists(input_nb):
-            print(f"ERROR {individual['id'][:8]}... | Notebook not found: {input_nb}")
-            return None, None
-        execute_script(input_nb, params, individual_dir)
+        run_analysis_for_individual(individual, data_type=data_type, output_dir=individual_dir)
         npy_files = {f: os.path.join(individual_dir, f) for f in os.listdir(individual_dir) if f.endswith('.npy')}
         true_file = None
         pred_file = None
@@ -310,7 +310,7 @@ def mutate(individual):
 def load_previous_population(run_dir):
     csv_path = os.path.join(run_dir, CSV_FILENAME)
     if not os.path.exists(csv_path):
-        print(f"No previous results found at {csv_path}. Starting fresh.")
+        print(f"No previous results found at {pretty_path(csv_path)}. Starting fresh.")
         return None, 0, None, float('inf'), None
     df = pd.read_csv(csv_path)
     if df.empty:
@@ -531,16 +531,16 @@ def genetic_algorithm(run_dir=None, data_type='ma2'):
                 else:
                     shutil.rmtree(best_link)
             os.symlink(best_individual_dir, best_link)
-            print(f"Created symbolic link to best individual: {best_link}")
+            print(f"Created symbolic link to best individual: {pretty_path(best_link)}")
         except OSError:
             if os.path.exists(best_link):
                 shutil.rmtree(best_link)
             shutil.copytree(best_individual_dir, best_link)
-            print(f"Copied best individual directory to: {best_link}")
+            print(f"Copied best individual directory to: {pretty_path(best_link)}")
     print(f"\nOptimization Complete!")
     print(f"Best MAPE: {best_mape:.2f}%")
-    print(f"Results saved in: {run_dir}")
-    print(f"Best individual: {best_individual_dir}")
+    print(f"Results saved in: {pretty_path(run_dir)}")
+    print(f"Best individual: {pretty_path(best_individual_dir) if best_individual_dir else best_individual_dir}")
     return best_params, best_mape
 
 def main():
@@ -554,12 +554,12 @@ def main():
                        help='Data type: ma1-ma4 (mode amplitude 1-4) or mp1-mp4 (mode phase 1-4) (default: ma2)')
     parser.add_argument('--state', type=int, default=2, 
                        help='State number (1, 2, or 3) (default: 2)')
-    parser.add_argument('--epochs', type=int, default=50,
-                       help='Number of epochs for each optimization run (default: 50)')
-    parser.add_argument('--population_size', type=int, default=50, 
-                       help='Population size for genetic algorithm (default: 50)')
-    parser.add_argument('--generations', type=int, default=100, 
-                       help='Number of generations for genetic algorithm (default: 100)')
+    parser.add_argument('--epochs', type=int, default=EPOCHS,
+                       help=f'Max epochs for each optimization run (default: {EPOCHS}; early stopping usually ends earlier)')
+    parser.add_argument('--population_size', type=int, default=POPULATION_SIZE, 
+                       help=f'Population size for genetic algorithm (default: {POPULATION_SIZE})')
+    parser.add_argument('--generations', type=int, default=GENERATIONS, 
+                       help=f'Number of generations for genetic algorithm (default: {GENERATIONS})')
     parser.add_argument('--mutation_rate', type=float, default=0.1, 
                        help='Mutation rate for genetic algorithm (default: 0.1)')
     parser.add_argument('--crossover_rate', type=float, default=0.8, 
@@ -574,6 +574,9 @@ def main():
     GENERATIONS = args.generations
     MUTATION_RATE = args.mutation_rate
     EPOCHS = args.epochs
+
+    # Honor the requested state: constrain the search space so individuals don't randomly pick other states.
+    PARAM_SPACE['state'] = [int(args.state)]
     
     # Update PARAM_SPACE to cap epochs at the specified value
     PARAM_SPACE['epochs'] = list(range(10, args.epochs + 1, 5))

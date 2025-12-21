@@ -34,7 +34,6 @@ config = {
     'state': 2,
     'selected_data_type': 'ma2',
     'reserved_shot': 114458,
-    'use_gpu': True,
     'epoch_num': 15,
     # ... other parameters
 }
@@ -51,7 +50,6 @@ results = analysis.run_analysis()
 ## Key Features
 
 - **Shared Functionality** - Common logic in base class
-- **GPU Support** - Built-in GPU optimization with automatic fallback
 - **Flexible Configuration** - Configurable model architecture and training parameters
 - **Data Processing** - Specialized processing for trimmed vs untrimmed data
 - **Crossover Validation** - Cross-state validation capabilities

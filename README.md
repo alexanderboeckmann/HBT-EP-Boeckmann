@@ -1,11 +1,10 @@
 # HBT-EP-Boeckmann
 
-A repository for HBT analysis using machine learning and GPU optimization, focused on parameter optimization workflows.
+A repository for HBT analysis using machine learning (CPU-only), focused on parameter optimization workflows.
 
 ## Features
 
 - **Parameter Optimization**: Genetic algorithm-based hyperparameter optimization
-- **GPU Acceleration**: GPU-optimized training and optimization
 - **Parallel Processing**: Multi-core parallel optimization runs
 - **Flexible Data Types**: Support for mode amplitude (ma1-ma4) and mode phase (mp1-mp4) analysis
 - **Multiple Analysis Modes**: Trimmed and untrimmed data analysis with crossover validation
@@ -16,9 +15,6 @@ A repository for HBT analysis using machine learning and GPU optimization, focus
 ```bash
 # Standard optimization
 python run_optimization.py --data_type ma2 --state 2
-
-# GPU-optimized optimization
-python run_optimization.py --data_type ma2 --use_gpu
 
 # Parallel optimization
 python run_optimization.py --data_type ma2 --parallel --num_workers 4
@@ -31,9 +27,6 @@ python run_optimization.py --data_type ma2 --epochs 20 --generations 200 --popul
 ```bash
 # Standard optimization
 python scripts/optimization/optimize_hbt_parameters.py --data_type ma2 --state 2
-
-# GPU-optimized optimization
-python scripts/optimization/optimize_hbt_parameters_gpu.py --data_type ma2 --use_gpu
 
 # Parallel optimization
 python scripts/optimization/optimize_hbt_parameters_parallel.py --data_type ma2 --num_workers 4
@@ -48,7 +41,6 @@ config = {
     'state': 2,
     'selected_data_type': 'ma2',
     'reserved_shot': 114458,
-    'use_gpu': True
 }
 
 # Run analysis
@@ -68,28 +60,31 @@ See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for detailed information about 
 ## Documentation
 
 - [Analysis Package](hbt_analysis/README.md) - New package system documentation
-- [GPU Setup Guide](docs/GPU_SETUP_GUIDE.md)
-- [Server Deployment Guide](docs/SERVER_DEPLOYMENT_GUIDE.md)
-- [GPU Deployment README](docs/README_GPU_DEPLOYMENT.md)
 
 ## Installation
 
 ```bash
-# Install the package in development mode
-pip install -e .
+# Install dependencies (CPU-only)
+pip install -r requirements.txt
 
-# Or install with GPU support
-pip install -e .[gpu]
+# Install the package in development mode (optional, for imports like `from hbt_analysis import ...`)
+pip install -e .
 ```
+
+## Performance Notes (Local Optimization)
+
+Optimization speed is dominated by repeatedly reading thousands of TIFF frames from disk.
+This repo now includes a simple on-disk cache of center-cropped 32x32 frames under `data/cache/`
+to accelerate repeated genetic algorithm evaluations. The first run will populate the cache; subsequent
+runs should be significantly faster.
 
 ## Project Structure
 
 ```
 scripts/optimization/          # Main optimization scripts
 ├── optimize_hbt_parameters.py        # Standard optimization
-├── optimize_hbt_parameters_gpu.py    # GPU-optimized optimization
 ├── optimize_hbt_parameters_parallel.py # Parallel optimization
-└── performance_comparison.py         # Performance analysis
+└── README_OPTIMIZATION.md            # Performance notes / usage
 
 hbt_analysis/                  # Core analysis classes
 ├── core/                     # Analysis implementations
@@ -98,7 +93,6 @@ hbt_analysis/                  # Core analysis classes
 │   ├── untrimmed.py         # Untrimmed data analysis
 │   └── crossover.py         # Crossover validation
 └── utils/                   # Utility functions
-    └── gpu.py               # GPU optimization utilities
 
 run_optimization.py          # Main optimization runner
 ``` 

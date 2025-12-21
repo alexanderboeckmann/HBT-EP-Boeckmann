@@ -23,6 +23,7 @@ from typing import Dict, List, Tuple, Optional
 import tensorflow as tf
 
 from .base import HBTAnalysisBase
+from ..utils.camera_cache import load_center32_frames_full
 
 
 class HBTAnalysisTrimmed(HBTAnalysisBase):
@@ -41,19 +42,31 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
     
     def load_ip_data(self, shot_list: List[int]) -> List[np.ndarray]:
         """Load IP data for given shots, handling missing files."""
-        ip_data = []
+        ip_data: List[Optional[np.ndarray]] = []
+        missing: List[int] = []
         for shot in shot_list:
             _, _, ip_path = self.get_paths_for_shot(shot)
             try:
                 ip_data.append(np.load(os.path.join(ip_path, f'{shot}ip.npy')))
             except FileNotFoundError:
-                print(f"IP data file for shot {shot} not found. Skipping.")
-        return ip_data
+                ip_data.append(None)
+                missing.append(shot)
+
+        if missing:
+            raise FileNotFoundError(
+                f"Missing IP data for {len(missing)} shots (showing up to 10): {missing[:10]}. "
+                f"Expected files like <data>/shots/<new|old>/{missing[0]}ip.npy"
+            )
+
+        # At this point all entries are non-None.
+        return [x for x in ip_data if x is not None]
     
     def format_ip_data(self, data: List[np.ndarray], target_length: int = None) -> np.ndarray:
         """Format IP data to target length and shape."""
         if target_length is None:
             target_length = self.default_frame_count
+        if not data:
+            raise ValueError("No IP data loaded; cannot format IP data.")
             
         data = np.asarray(data, dtype=float)
         frame_ratio = data[0].shape[0] // target_length
@@ -90,40 +103,37 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
                 return max(0, i - window_size)
         return len(ip_data)
     
-    def process_shot_data(self, folder_path: str, initial_cutoff: int, end_cutoff: int, 
-                         max_pixel_value: float = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
-        """Process TIFF images in a folder, cropping to 32x32 and normalizing."""
+    def process_shot_data(
+        self,
+        folder_path: str,
+        initial_cutoff: int,
+        end_cutoff: int,
+        max_pixel_value: float = None,
+        shot_num: Optional[int] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+        """Process TIFF images in a folder, cropping to 32x32 and normalizing (with disk cache)."""
         if max_pixel_value is None:
             max_pixel_value = self.camera_depth
-            
-        tiff_files = sorted(glob.glob(os.path.join(folder_path, "*.tiff")))
-        if not tiff_files:
-            raise ValueError(f"No TIFF files found in {folder_path}")
-        
-        end_cutoff = min(end_cutoff, len(tiff_files))
+
+        cache_file = None
+        if shot_num is not None:
+            cache_file = self.project_path('data', 'cache', 'camera_center32_full', str(shot_num), 'frames.npy')
+
+        # Load full stack from cache (or build it), then slice cutoffs.
+        frames_full = load_center32_frames_full(
+            folder_path=folder_path,
+            cache_file=cache_file,
+            max_pixel_value=max_pixel_value,
+        )
+
+        end_cutoff = min(end_cutoff, frames_full.shape[0])
         if initial_cutoff >= end_cutoff:
             raise ValueError(f"Invalid cutoff indices: initial={initial_cutoff}, end={end_cutoff}")
-        
-        shot_2d = []
-        for tiff_file in tiff_files[initial_cutoff:end_cutoff]:
-            try:
-                with Image.open(tiff_file) as im:
-                    img = np.array(im, dtype=np.float32) / max_pixel_value
-                    h, w = img.shape
-                    if h < 32 or w < 32:
-                        raise ValueError(f"Image too small to crop to 32x32: got {h}x{w}")
-                    
-                    start_h, start_w = (h - 32) // 2, (w - 32) // 2
-                    cropped = img[start_h:start_h + 32, start_w:start_w + 32]
-                    shot_2d.append(cropped)
-            except Exception as e:
-                print(f"Error loading {tiff_file}: {e}")
-                continue
-        
-        if not shot_2d:
+
+        shot_2d = frames_full[initial_cutoff:end_cutoff]
+        if shot_2d.size == 0:
             raise ValueError(f"No valid frames processed for {folder_path}")
-        
-        shot_2d = np.array(shot_2d)
+
         return shot_2d, shot_2d, shot_2d.reshape(len(shot_2d), -1), len(shot_2d)
     
     def process_all_shots(self, shot_list: List[int], initial_cutoff_indices: List[int], 
@@ -135,11 +145,14 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
         for i, shot in enumerate(shot_list):
             if shot == self.config['reserved_shot']:
                 continue
-            data_path, _, _ = self.get_paths_for_shot(shot)
-            folder_path = os.path.join(data_path, str(shot), 'CAM-26731', 'tiff')
+            try:
+                folder_path = self.resolve_camera_frames_dir(shot)
+            except Exception as e:
+                print(f"Error resolving camera frames for shot {shot}: {e}")
+                continue
             try:
                 shot_2d, cut_2d, flat_data, actual_frames = self.process_shot_data(
-                    folder_path, initial_cutoff_indices[i], end_cutoff_indices[i]
+                    folder_path, initial_cutoff_indices[i], end_cutoff_indices[i], shot_num=shot
                 )
                 if actual_frames > 0:
                     training_data_2D.append(shot_2d)
@@ -278,6 +291,13 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
         training_data_2D, cut_training_data_2D, flat_training_data, self.valid_shots, actual_frame_counts = self.process_all_shots(
             self.shot_list, initial_cutoff_indices, end_cutoff_indices, frame_counts
         )
+
+        if not self.valid_shots:
+            raise ValueError(
+                f"No usable camera frames found for state {self.config['state']} shots. "
+                f"Checked for tif/tiff/png under each shot's CAM-* folders. "
+                f"If you are optimizing state 2 (old shots), note this repo appears to contain no camera frames for old shots."
+            )
         
         # Process reserved shot
         print(f"Processing reserved shot {self.config['reserved_shot']}...")
@@ -288,14 +308,19 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
         
         if self.config['reserved_shot'] is not None:
             shot_idx = self.shot_list.index(self.config['reserved_shot'])
-            data_path, _, _ = self.get_paths_for_shot(self.config['reserved_shot'])
-            folder_path = os.path.join(data_path, str(self.config['reserved_shot']), 'CAM-26731', 'tiff')
+            try:
+                folder_path = self.resolve_camera_frames_dir(self.config['reserved_shot'])
+            except Exception as e:
+                print(f"Error resolving camera frames for RESERVED_SHOT {self.config['reserved_shot']}: {e}")
+                folder_path = None
             
             print(f"RESERVED_SHOT {self.config['reserved_shot']}: initial_cutoff={initial_cutoff_indices[shot_idx]}, end_cutoff={end_cutoff_indices[shot_idx]}")
             
             try:
+                if folder_path is None:
+                    raise ValueError("No camera frames directory found for reserved shot.")
                 shot_2d, cut_2d, flat_data, actual_frames = self.process_shot_data(
-                    folder_path, initial_cutoff_indices[shot_idx], end_cutoff_indices[shot_idx]
+                    folder_path, initial_cutoff_indices[shot_idx], end_cutoff_indices[shot_idx], shot_num=self.config['reserved_shot']
                 )
                 print(f"RESERVED_SHOT {self.config['reserved_shot']}: actual_frames={actual_frames}")
                 reserved_shot_data_2d = shot_2d
@@ -340,6 +365,9 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
             for j in range(actual_frame_counts[i]):
                 raw_target_vector.append(target_data[i][j])
         
+        if not raw_target_vector:
+            raise ValueError("No training samples available after filtering; cannot compute normalization.")
+
         raw_target_vector = np.asarray(raw_target_vector, dtype=np.float32)[:, 0]
         percentile_cutoff = np.percentile(np.abs(raw_target_vector), self.config['outlier_cutoff'])
         ma_norm = percentile_cutoff if percentile_cutoff > 0 else 1.0
@@ -372,13 +400,18 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
         
         # Split data
         test_size = 400
+        if len(training_vector) <= test_size:
+            raise ValueError(
+                f"Not enough samples to split: have {len(training_vector)} frames but test_size={test_size}. "
+                f"Add more camera frames or reduce test_size."
+            )
         testing_inputs = training_vector[-test_size:]
         testing_labels = target_vector[-test_size:]
         training_vector = training_vector[:-test_size]
         target_vector = target_vector[:-test_size]
         
-        # Save normalization info
-        self.save_normalization_info(ma_norm, outlier_threshold)
+        # Save normalization info (write into output_dir when provided to avoid parallel workers clobbering a shared file)
+        self.save_normalization_info(ma_norm, outlier_threshold, output_dir=output_dir)
         
         print('Training shape:', training_vector.shape, 'Target shape:', target_vector.shape)
         print('Testing shape:', testing_inputs.shape, 'Testing label shape:', testing_labels.shape)
@@ -386,7 +419,8 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
         # Create and train model
         print("Creating model...")
         model = self.create_model()
-        model.summary()
+        if bool(self.config.get('model_summary', True)):
+            model.summary()
         
         print("Training model...")
         history = self.train_model(model, training_vector, target_vector)

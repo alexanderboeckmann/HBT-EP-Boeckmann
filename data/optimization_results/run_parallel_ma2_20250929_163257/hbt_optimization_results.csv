@@ -1,9 +1,0 @@
-generation,individual_id,notebook_type,state,reserved_shot,epochs,validation_split,activation_func,loss_func,optimizer_func,outlier_cutoff,num_conv2d_layers,num_dense_layers,conv2d_neurons,conv2d_size,dense_layer_neurons,max_pooling_size,early_stopping_patience,early_stopping_min_delta,mape
-1,0a3727c4-a5e5-44f1-98df-03c7fe235ece,trimmed,2,114458,20,0.3,relu,mse,sgd,86.0,2,1,"[32, 16]","[(4, 4), (8, 8)]",[16],"(4, 4)",15,0.001,13.154244162655896
-1,995bd363-a69f-4826-b97e-016423b9edec,trimmed,2,114458,40,0.3,sigmoid,mse,adam,88.0,3,1,"[32, 64, 16]","[(5, 5), (7, 7), (8, 8)]",[8],"(2, 2)",5,0.005,16.475148179819676
-1,75495f40-90f4-41b0-ab47-a86e2175bb32,trimmed,3,114458,20,0.25,relu,mae,adam,96.0,2,3,"[64, 8]","[(4, 4), (5, 5)]","[16, 8, 64]","(3, 3)",10,0.005,14.096675499157998
-1,daa230b8-036c-442b-a71e-28df98fecdbf,untrimmed,3,119671,20,0.3,sigmoid,mse,sgd,100.0,1,2,[64],"[(3, 3)]","[8, 8]","(4, 4)",10,0.05,7.637457944207743
-2,079aab95-cdf7-49bb-b68f-ca18840901c3,trimmed,2,114458,20,0.3,sigmoid,mse,sgd,100.0,1,1,[64],"[(3, 3)]",[16],"(4, 4)",15,0.05,14.912446061009637
-2,78ea78bd-cca1-48f7-bbde-5506e0df690a,trimmed,2,114458,20,0.3,relu,mse,sgd,86.0,2,1,"[32, 16]","[(4, 4), (8, 8)]",[16],"(4, 4)",15,0.001,13.867413487297103
-2,88e20ccf-58b2-4339-b3e3-7fdffe1454bf,untrimmed,3,119671,20,0.3,relu,mse,sgd,86.0,1,1,[32],"[(4, 4)]",[8],"(4, 4)",15,0.05,4.102973097167407
-2,9c9516af-dfcc-45a0-afbf-9adab095ffb6,untrimmed,3,119671,20,0.3,sigmoid,mse,sgd,100.0,1,2,[64],"[(3, 3)]","[8, 8]","(4, 4)",10,0.05,8.062855186284713

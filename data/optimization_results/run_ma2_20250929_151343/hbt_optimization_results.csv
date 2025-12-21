@@ -1,3 +1,0 @@
-generation,individual_id,notebook_type,state,reserved_shot,epochs,validation_split,activation_func,loss_func,optimizer_func,outlier_cutoff,num_conv2d_layers,num_dense_layers,conv2d_neurons,conv2d_size,dense_layer_neurons,max_pooling_size,mape
-1,87e06fec-a722-4e97-8e66-c7d531df7769,trimmed,1,119671,10,0.15,sigmoid,mse,adam,92.0,1,2,[64],"[(3, 3)]","[8, 16]","(4, 4)",18.79839136578299
-1,dd423f17-4e5a-47c9-91f7-30e2ea87293a,untrimmed,2,114458,15,0.3,sigmoid,mae,adam,82.0,2,2,"[8, 64]","[(4, 4), (5, 5)]","[32, 16]","(4, 4)",14.651196595188248

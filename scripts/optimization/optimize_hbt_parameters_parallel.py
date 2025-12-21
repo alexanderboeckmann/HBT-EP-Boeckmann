@@ -22,7 +22,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import subprocess
 import random
 import multiprocessing as mp
 from pathlib import Path
@@ -32,6 +31,13 @@ from typing import Dict, List, Tuple, Optional, Any
 import logging
 from tqdm import tqdm
 import psutil
+import sys
+import contextlib
+
+# Allow importing the package when running this script directly
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from hbt_analysis import HBTAnalysisTrimmed, HBTAnalysisUntrimmed
 
 
 # Centralized project root and path utilities
@@ -41,9 +47,19 @@ def project_path(*parts):
     filtered_parts = [part for part in parts if part is not None]
     return os.path.join(PROJECT_ROOT, *filtered_parts)
 
+def pretty_path(path: str) -> str:
+    """Render repo-local paths as '<repo_name>/<relative>' for cleaner logs."""
+    try:
+        p = Path(path).resolve()
+        root = Path(PROJECT_ROOT).resolve()
+        rel = p.relative_to(root)
+        return f"{root.name}/{rel.as_posix()}"
+    except Exception:
+        return str(path)
+
 # Configuration (defaults, can be overridden by command line)
 POPULATION_SIZE = 50
-GENERATIONS = 100
+GENERATIONS = 10
 EPOCHS = 50  # Default epochs, can be overridden by command line
 TOP_PERCENT = 0.125
 MUTATION_RATE = 0.1
@@ -106,13 +122,47 @@ RESERVED_SHOTS = {
 }
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Initialize optimal workers after logger is set up
-MAX_WORKERS = get_optimal_workers()
-logger.info(f"System resources: {mp.cpu_count()} CPUs, {psutil.virtual_memory().available / (1024**3):.1f}GB RAM")
-logger.info(f"Optimal workers: {MAX_WORKERS}")
+def setup_logging(verbose: bool = True):
+    """
+    Configure logging.
+
+    Important: do NOT configure logging at import time because macOS ProcessPoolExecutor uses
+    the 'spawn' start method, which re-imports this module in each worker.
+    """
+    level = logging.INFO if verbose else logging.WARNING
+    logging.basicConfig(level=level, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+@contextlib.contextmanager
+def redirect_worker_output(log_path: str):
+    """
+    Redirect this process's stdout/stderr to a file.
+
+    This prevents multiple parallel workers (and TensorFlow/Keras progress output) from
+    interleaving on the console.
+    """
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    # Line-buffered text output for Python prints.
+    f = open(log_path, "a", buffering=1)
+    # Also redirect the underlying OS-level file descriptors so C/C++ (TF) output is captured.
+    stdout_fd = sys.stdout.fileno()
+    stderr_fd = sys.stderr.fileno()
+    saved_stdout = os.dup(stdout_fd)
+    saved_stderr = os.dup(stderr_fd)
+    try:
+        os.dup2(f.fileno(), stdout_fd)
+        os.dup2(f.fileno(), stderr_fd)
+        yield
+    finally:
+        try:
+            os.dup2(saved_stdout, stdout_fd)
+            os.dup2(saved_stderr, stderr_fd)
+        finally:
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+            f.close()
 
 
 def generate_individual():
@@ -164,20 +214,8 @@ def construct_paths(individual, run_dir, existing_ids):
         existing_ids.add(individual['id'])
         individual_dir = os.path.join(run_dir, f"individual_{individual['id']}")
     os.makedirs(individual_dir, exist_ok=True)
-    base = f"results_{individual['notebook_type']}_state_{individual['state']}_ma2"
-    initial_input_nb = project_path('notebooks', f"{individual['notebook_type']}_HBT_analysis.py")
-    initial_output_nb = os.path.join(individual_dir, f"{individual['id']}_output.ipynb")
-    initial_path_true = os.path.join(individual_dir, f"{base}_true.npy")
-    initial_path_pred = os.path.join(individual_dir, f"{base}_pred.npy")
     params_path = os.path.join(individual_dir, "parameters.json")
-    return (
-        initial_input_nb,
-        initial_output_nb,
-        initial_path_true,
-        initial_path_pred,
-        individual_dir,
-        params_path
-    )
+    return individual_dir, params_path
 
 def prepare_parameters(individual, data_type='ma2'):
     """Prepare parameters for script execution (same as original)"""
@@ -202,34 +240,42 @@ def prepare_parameters(individual, data_type='ma2'):
         'EARLY_STOPPING_MIN_DELTA': float(individual['early_stopping_min_delta'])
     }
 
-def execute_script(input_script, parameters, individual_dir):
-    """Execute the analysis script (same as original)"""
-    os.makedirs(individual_dir, exist_ok=True)
-    try:
-        cmd = ['python', input_script]
-        for key, value in parameters.items():
-            if key != 'individual_id':
-                cmd.extend([f'--{key}', str(value)])
-        cmd.extend(['--output_dir', individual_dir])
-        
-        result = subprocess.run(
-            cmd,
-            cwd=individual_dir,
-            capture_output=True,
-            text=True,
-            timeout=3600
-        )
-        
-        if result.returncode != 0:
-            logger.error(f"Script execution failed for ID {parameters.get('individual_id', 'unknown')}: {result.stderr}")
-            raise RuntimeError(f"Script execution failed: {result.stderr}")
-            
-    except subprocess.TimeoutExpired:
-        logger.error(f"Script execution timed out for ID {parameters.get('individual_id', 'unknown')}")
-        raise
-    except Exception as e:
-        logger.error(f"Script execution failed for ID {parameters.get('individual_id', 'unknown')}: {e}")
-        raise
+def run_analysis_for_individual(individual, data_type: str, output_dir: str):
+    """Run analysis in-process (no subprocess/notebook runner)."""
+    config = {
+        'state': int(individual['state']),
+        'selected_data_type': data_type,
+        'reserved_shot': int(individual['reserved_shot']),
+        'epoch_num': int(individual['epochs']),
+        'validation_split': float(individual['validation_split']),
+        'activation_func': individual['activation_func'],
+        'loss_func': individual['loss_func'],
+        'optimizer_func': individual['optimizer_func'],
+        'outlier_cutoff': float(individual['outlier_cutoff']),
+        'num_conv2d_layers': int(individual['num_conv2d_layers']),
+        'num_dense_layers': int(individual['num_dense_layers']),
+        'conv2d_neurons': individual['conv2d_neurons'],
+        'conv2d_size': individual['conv2d_size'],
+        'dense_layer_neurons': individual['dense_layer_neurons'],
+        'max_pooling_size': individual['max_pooling_size'],
+        'batch_size': 32,
+        'early_stopping_patience': int(individual.get('early_stopping_patience', 20)),
+        'early_stopping_min_delta': float(individual.get('early_stopping_min_delta', 0.01)),
+        # Reduce noisy output in optimization workers.
+        'fit_verbose': 0,
+        'model_summary': False,
+        # Ensure normalization defaults to writing within this individual's output dir.
+        'output_dir': output_dir,
+    }
+
+    if individual['notebook_type'] == 'trimmed':
+        analysis = HBTAnalysisTrimmed(config)
+    elif individual['notebook_type'] == 'untrimmed':
+        analysis = HBTAnalysisUntrimmed(config)
+    else:
+        raise ValueError(f"Unknown notebook_type: {individual['notebook_type']}")
+
+    analysis.run_analysis(output_dir=output_dir)
 
 def load_result_arrays(true_path, pred_path):
     """Load result arrays (same as original)"""
@@ -268,64 +314,66 @@ def evaluate_individual_worker(args):
         return individual, None
     
     try:
-        input_nb, output_nb, path_true, path_pred, individual_dir, params_path = construct_paths(individual, run_dir, existing_ids)
+        individual_dir, params_path = construct_paths(individual, run_dir, existing_ids)
         params = prepare_parameters(individual, data_type)
         
-        with open(params_path, 'w') as f:
-            json.dump(params, f, indent=4)
+        worker_log = os.path.join(individual_dir, "worker.log")
+        with redirect_worker_output(worker_log):
+            with open(params_path, 'w') as f:
+                json.dump(params, f, indent=4)
+
+            # Keep TF C++ logs down where possible (must be set before TF import to be fully effective,
+            # but still helps for some subcomponents).
+            os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+            run_analysis_for_individual(individual, data_type=data_type, output_dir=individual_dir)
         
-        if not os.path.exists(input_nb):
-            logger.error(f"Notebook not found: {input_nb}")
-            return individual, None
-        
-        execute_script(input_nb, params, individual_dir)
-        
-        # Find result files
-        npy_files = {f: os.path.join(individual_dir, f) for f in os.listdir(individual_dir) if f.endswith('.npy')}
-        true_file = None
-        pred_file = None
-        for name, path in npy_files.items():
-            if 'true' in name.lower():
-                true_file = path
-            elif 'pred' in name.lower():
-                pred_file = path
-        
-        if true_file is None or pred_file is None:
-            logger.error(f"Missing output files: true={true_file is not None}, pred={pred_file is not None}")
-            return individual, None
-        
-        # Validate state consistency
-        base_name = os.path.basename(true_file).replace('_true.npy', '')
-        parts = base_name.split('_')
-        notebook_type = parts[1]
-        state_idx = parts.index('state') + 1
-        state = int(parts[state_idx]) if state_idx < len(parts) else None
-        
-        if state is None or state != individual['state']:
-            logger.error(f"Mismatched state in {individual_dir}: expected {individual['state']}, found {state}")
-            return individual, None
-        
-        true_data, pred_data = load_result_arrays(true_file, pred_file)
-        if not validate_result_data(true_data, pred_data, individual['id']):
-            return individual, None
-        
-        mape = compute_mape(true_data, pred_data)
-        elapsed = time.time() - start
-        
-        logger.info(f"SUCCESS {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} | "
-                   f"epochs: {individual['epochs']} | patience: {individual['early_stopping_patience']} | "
-                   f"MAPE: {mape:.2f}% | {elapsed:.1f}s")
-        
-        return individual, mape
+            # Find result files
+            npy_files = {f: os.path.join(individual_dir, f) for f in os.listdir(individual_dir) if f.endswith('.npy')}
+            true_file = None
+            pred_file = None
+            for name, path in npy_files.items():
+                if 'true' in name.lower():
+                    true_file = path
+                elif 'pred' in name.lower():
+                    pred_file = path
+            
+            if true_file is None or pred_file is None:
+                raise RuntimeError(f"Missing output files: true={true_file is not None}, pred={pred_file is not None}")
+            
+            # Validate state consistency
+            base_name = os.path.basename(true_file).replace('_true.npy', '')
+            parts = base_name.split('_')
+            state_idx = parts.index('state') + 1
+            state = int(parts[state_idx]) if state_idx < len(parts) else None
+            
+            if state is None or state != individual['state']:
+                raise RuntimeError(f"Mismatched state in {individual_dir}: expected {individual['state']}, found {state}")
+            
+            true_data, pred_data = load_result_arrays(true_file, pred_file)
+            if not validate_result_data(true_data, pred_data, individual['id']):
+                raise RuntimeError("Invalid result data (NaN/Inf or missing).")
+            
+            mape = compute_mape(true_data, pred_data)
+            elapsed = time.time() - start
+            return individual, mape, elapsed, None, worker_log
         
     except Exception as e:
-        logger.error(f"Exception for {individual['id']}: {e}")
-        return individual, None
+        # Return error message to main process; details will be in worker.log if created.
+        worker_log = None
+        try:
+            worker_log = os.path.join(run_dir, f"individual_{individual['id']}", "worker.log")
+            os.makedirs(os.path.dirname(worker_log), exist_ok=True)
+            with open(worker_log, "a", buffering=1) as f:
+                f.write(f"\n[worker exception] {repr(e)}\n")
+        except Exception:
+            worker_log = None
+        return individual, None, None, str(e), worker_log
 
 def evaluate_population_parallel(population, run_dir, existing_ids, max_workers=None, data_type='ma2'):
     """Evaluate population in parallel with progress tracking"""
     if max_workers is None:
-        max_workers = MAX_WORKERS
+        max_workers = get_optimal_workers()
     
     logger.info(f"Evaluating {len(population)} individuals in parallel using {max_workers} workers")
     
@@ -344,7 +392,7 @@ def evaluate_population_parallel(population, run_dir, existing_ids, max_workers=
         # Process completed jobs with progress bar
         with tqdm(total=len(population), desc="Evaluating individuals", unit="individual") as pbar:
             for future in as_completed(future_to_individual):
-                individual, mape = future.result()
+                individual, mape, elapsed, err, worker_log = future.result()
                 
                 # Always add the individual's ID to existing_ids, regardless of success/failure
                 # This prevents ID conflicts in future generations
@@ -353,6 +401,12 @@ def evaluate_population_parallel(population, run_dir, existing_ids, max_workers=
                 if mape is not None:
                     fitness.append({'individual': individual, 'mape': mape})
                     successful_count += 1
+                    pbar.write(
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} - INFO - "
+                        f"DONE {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} | "
+                        f"epochs: {individual['epochs']} | patience: {individual.get('early_stopping_patience')} | "
+                        f"MAPE: {mape:.2f}% | {elapsed:.1f}s"
+                    )
                     pbar.set_postfix({
                         'Success': successful_count, 
                         'Failed': failed_count,
@@ -360,6 +414,12 @@ def evaluate_population_parallel(population, run_dir, existing_ids, max_workers=
                     })
                 else:
                     failed_count += 1
+                    msg = f"FAIL {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']}"
+                    if worker_log:
+                        msg += f" | see {pretty_path(worker_log)}"
+                    if err:
+                        msg += f" | {err}"
+                    pbar.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - WARNING - {msg}")
                     pbar.set_postfix({
                         'Success': successful_count, 
                         'Failed': failed_count,
@@ -449,7 +509,7 @@ def load_previous_population(run_dir):
     """Load previous population (same as original)"""
     csv_path = os.path.join(run_dir, CSV_FILENAME)
     if not os.path.exists(csv_path):
-        logger.info(f"No previous results found at {csv_path}. Starting fresh.")
+        logger.info(f"No previous results found at {pretty_path(csv_path)}. Starting fresh.")
         return None, 0, None, float('inf'), None
     
     df = pd.read_csv(csv_path)
@@ -708,8 +768,8 @@ def genetic_algorithm_parallel(run_dir=None, max_workers=None, data_type='ma2'):
     
     logger.info(f"\nOptimization Complete!")
     logger.info(f"Best MAPE: {best_mape:.2f}%")
-    logger.info(f"Results saved in: {run_dir}")
-    logger.info(f"Best individual: {best_individual_dir}")
+    logger.info(f"Results saved in: {pretty_path(run_dir)}")
+    logger.info(f"Best individual: {pretty_path(best_individual_dir) if best_individual_dir else best_individual_dir}")
     
     return best_params, best_mape
 
@@ -737,19 +797,31 @@ def main():
                        help='Number of epochs for each optimization run (default: 50)')
     
     args = parser.parse_args()
+
+    setup_logging(verbose=True)
     
     # Update global configuration with command line arguments
     POPULATION_SIZE = args.population_size
     GENERATIONS = args.generations
     MUTATION_RATE = args.mutation_rate
     EPOCHS = args.epochs
+
+    # Honor the requested state: constrain the search space so individuals don't randomly pick other states.
+    PARAM_SPACE['state'] = [int(args.state)]
     
     # Update PARAM_SPACE to cap epochs at the specified value
     PARAM_SPACE['epochs'] = list(range(10, args.epochs + 1, 5))
     
     # Local execution only
-    max_workers = args.max_workers or MAX_WORKERS
-    
+    recommended = get_optimal_workers()
+    if args.max_workers is None:
+        # Auto mode: take the recommended value, but never go below 2.
+        # (If the user explicitly wants 1, they can pass --max_workers 1.)
+        max_workers = max(2, recommended)
+    else:
+        max_workers = args.max_workers
+    logger.info(f"System resources: {mp.cpu_count()} CPUs, {psutil.virtual_memory().available / (1024**3):.1f}GB RAM")
+    logger.info(f"Recommended workers: {recommended} | Using: {max_workers}")
     logger.info(f"Starting parallel optimization with {max_workers} workers (available CPUs: {mp.cpu_count()})")
     
     best_params, best_mape = genetic_algorithm_parallel(
