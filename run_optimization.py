@@ -35,8 +35,8 @@ def create_parser():
     parser.add_argument('--state', type=int, default=2, 
                        help='State number (1, 2, or 3) (default: 2)')
     # Epochs are treated as a maximum; training typically ends earlier via early stopping.
-    parser.add_argument('--epochs', type=int, default=50,
-                       help='Max epochs for each optimization run (default: 50; early stopping usually ends earlier)')
+    parser.add_argument('--epochs', type=int, default=35,
+                       help='Max epochs for each optimization run (default: 35; early stopping usually ends earlier)')
     
     # Optimization method
     # Default to parallel since it's typically much faster; allow opting out with --no-parallel.
@@ -54,8 +54,8 @@ def create_parser():
     # Genetic algorithm parameters
     parser.add_argument('--population_size', type=int, default=50, 
                        help='Population size for genetic algorithm (default: 50)')
-    parser.add_argument('--generations', type=int, default=10,
-                       help='Number of generations for genetic algorithm (default: 10)')
+    parser.add_argument('--generations', type=int, default=5,
+                       help='Number of generations for genetic algorithm (default: 5)')
     parser.add_argument('--mutation_rate', type=float, default=0.1, 
                        help='Mutation rate for genetic algorithm (default: 0.1)')
     parser.add_argument('--crossover_rate', type=float, default=0.8, 
