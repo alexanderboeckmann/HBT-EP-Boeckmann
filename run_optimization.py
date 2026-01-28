@@ -30,8 +30,10 @@ def create_parser():
     parser = argparse.ArgumentParser(description='HBT Parameter Optimization Runner')
     
     # Core parameters
-    parser.add_argument('--data_type', type=str, default='ma2', 
-                       help='Data type: ma1-ma4 (mode amplitude 1-4) or mp1-mp4 (mode phase 1-4) (default: ma2)')
+    parser.add_argument('--data_type', type=str, default='ma2',
+                       help='Data type: ma1-ma4 (mode amplitude 1-4), mp1-mp4 (mode phase 1-4), '
+                            'mps1-mps4 (sin(phase) for modes 1-4), mpc1-mpc4 (cos(phase) for modes 1-4) '
+                            '(default: ma2)')
     parser.add_argument('--state', type=int, default=2, 
                        help='State number (1, 2, or 3) (default: 2)')
     # Epochs are treated as a maximum; training typically ends earlier via early stopping.

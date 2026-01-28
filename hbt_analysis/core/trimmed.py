@@ -20,6 +20,7 @@ import os
 import glob
 import json
 import time
+import re
 from PIL import Image
 from typing import Dict, List, Tuple, Optional
 import tensorflow as tf
@@ -224,13 +225,34 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
             idx = shot_list.index(reserved_shot)
             initial = initial_cutoff_indices[idx] * frame_ratio
             end = min(end_cutoff_indices[idx] * frame_ratio, len(hbt_data['times'][idx]))
-            mode_index = {'ma1': 0, 'ma2': 1, 'ma3': 2, 'ma4': 3, 'mp1': 0, 'mp2': 1, 'mp3': 2, 'mp4': 3}
-            data_type = 'amplitudes' if self.config['selected_data_type'].startswith('ma') else 'phases'
-            mode_num = mode_index[self.config['selected_data_type']]
-            hbt_data_selected = hbt_data[data_type][idx][mode_num]
+            sel = str(self.config['selected_data_type'])
+            mode_match = re.search(r'(\d+)$', sel)
+            if not mode_match:
+                raise ValueError(f"Invalid selected_data_type (missing mode index): {sel!r}")
+            mode_num = int(mode_match.group(1))
+            if mode_num not in (1, 2, 3, 4):
+                raise ValueError(f"Invalid selected_data_type (mode must be 1-4): {sel!r}")
+
+            if sel.startswith('ma'):
+                data_type = 'amplitudes'
+                transform = None
+            elif sel.startswith('mp'):
+                data_type = 'phases'
+                if sel.startswith('mps'):
+                    transform = np.sin
+                elif sel.startswith('mpc'):
+                    transform = np.cos
+                else:
+                    transform = None
+            else:
+                raise ValueError(f"Invalid selected_data_type (must start with 'ma' or 'mp'): {sel!r}")
+
+            hbt_data_selected = hbt_data[data_type][idx][mode_num - 1]
             reserved_shot_hbt = hbt_data_selected[initial:end]
             hbt_frame_ratio = (end - initial) // reserved_frame_count if reserved_frame_count > 0 else 1
             reserved_shot_hbt = reserved_shot_hbt[::hbt_frame_ratio][:reserved_frame_count]
+            if transform is not None:
+                reserved_shot_hbt = transform(reserved_shot_hbt)
             if ma_norm is not None:
                 clipped_count = np.sum(reserved_shot_hbt > 3 * ma_norm) + np.sum(reserved_shot_hbt < -3 * ma_norm)
                 print(f"RESERVED_SHOT {reserved_shot}: {clipped_count} values clipped out of {len(reserved_shot_hbt)}")
@@ -356,6 +378,9 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
         )
         
         # Prepare target data
+        # Add phase sin/cos targets to avoid phase wrap discontinuity at +/-pi.
+        mp_sin = [[np.sin(x).astype(np.float32) for x in mode] for mode in hbt_data['phases']]
+        mp_cos = [[np.cos(x).astype(np.float32) for x in mode] for mode in hbt_data['phases']]
         data_type_mapping = {
             'ma1': hbt_data['amplitudes'][0],
             'ma2': hbt_data['amplitudes'][1],
@@ -364,7 +389,15 @@ class HBTAnalysisTrimmed(HBTAnalysisBase):
             'mp1': hbt_data['phases'][0],
             'mp2': hbt_data['phases'][1],
             'mp3': hbt_data['phases'][2],
-            'mp4': hbt_data['phases'][3]
+            'mp4': hbt_data['phases'][3],
+            'mps1': mp_sin[0],
+            'mps2': mp_sin[1],
+            'mps3': mp_sin[2],
+            'mps4': mp_sin[3],
+            'mpc1': mp_cos[0],
+            'mpc2': mp_cos[1],
+            'mpc3': mp_cos[2],
+            'mpc4': mp_cos[3],
         }
         
         if self.config['selected_data_type'] not in data_type_mapping:

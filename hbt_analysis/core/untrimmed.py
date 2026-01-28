@@ -299,6 +299,9 @@ class HBTAnalysisUntrimmed(HBTAnalysisBase):
         hbt_data = self.load_hbt_data(self.shot_list, self.valid_shots)
         
         # Prepare target data
+        # Add phase sin/cos targets to avoid phase wrap discontinuity at +/-pi.
+        mp_sin = [[np.sin(x).astype(np.float32) for x in mode] for mode in hbt_data['phases']]
+        mp_cos = [[np.cos(x).astype(np.float32) for x in mode] for mode in hbt_data['phases']]
         data_type_mapping = {
             'ma1': hbt_data['amplitudes'][0],
             'ma2': hbt_data['amplitudes'][1],
@@ -307,7 +310,15 @@ class HBTAnalysisUntrimmed(HBTAnalysisBase):
             'mp1': hbt_data['phases'][0],
             'mp2': hbt_data['phases'][1],
             'mp3': hbt_data['phases'][2],
-            'mp4': hbt_data['phases'][3]
+            'mp4': hbt_data['phases'][3],
+            'mps1': mp_sin[0],
+            'mps2': mp_sin[1],
+            'mps3': mp_sin[2],
+            'mps4': mp_sin[3],
+            'mpc1': mp_cos[0],
+            'mpc2': mp_cos[1],
+            'mpc3': mp_cos[2],
+            'mpc4': mp_cos[3],
         }
         
         if self.config['selected_data_type'] not in data_type_mapping:

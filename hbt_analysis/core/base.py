@@ -383,8 +383,10 @@ class HBTAnalysisBase:
         
         # Core parameters
         parser.add_argument('--state', type=int, required=True, help='State number (1, 2, or 3)')
-        parser.add_argument('--selected_data_type', type=str, default='ma2', 
-                          help='Data type: ma1-ma4 (mode amplitude 1-4) or mp1-mp4 (mode phase 1-4) (default: ma2)')
+        parser.add_argument('--selected_data_type', type=str, default='ma2',
+                          help='Data type: ma1-ma4 (mode amplitude 1-4), mp1-mp4 (mode phase 1-4), '
+                               'mps1-mps4 (sin(phase) for modes 1-4), mpc1-mpc4 (cos(phase) for modes 1-4) '
+                               '(default: ma2)')
         parser.add_argument('--RESERVED_SHOT', type=int, help='Reserved shot number')
         parser.add_argument('--output_dir', type=str, help='Output directory for saving results')
         

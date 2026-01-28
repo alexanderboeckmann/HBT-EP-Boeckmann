@@ -779,8 +779,10 @@ def main():
     global POPULATION_SIZE, GENERATIONS, MUTATION_RATE, EPOCHS
     
     parser = argparse.ArgumentParser(description='Parallel HBT Parameter Optimization')
-    parser.add_argument('--data_type', type=str, default='ma2', 
-                       help='Data type: ma1-ma4 (mode amplitude 1-4) or mp1-mp4 (mode phase 1-4) (default: ma2)')
+    parser.add_argument('--data_type', type=str, default='ma2',
+                       help='Data type: ma1-ma4 (mode amplitude 1-4), mp1-mp4 (mode phase 1-4), '
+                            'mps1-mps4 (sin(phase) for modes 1-4), mpc1-mpc4 (cos(phase) for modes 1-4) '
+                            '(default: ma2)')
     parser.add_argument('--max_workers', type=int, help='Maximum number of parallel workers')
     parser.add_argument('--run_dir', help='Specific run directory to resume')
     parser.add_argument('--population_size', type=int, default=POPULATION_SIZE,
@@ -795,10 +797,12 @@ def main():
                        help='State number (1, 2, or 3) (default: 2)')
     parser.add_argument('--epochs', type=int, default=50,
                        help='Number of epochs for each optimization run (default: 50)')
+    parser.add_argument('--verbose', action='store_true',
+                       help='Enable verbose logging output')
     
     args = parser.parse_args()
 
-    setup_logging(verbose=True)
+    setup_logging(verbose=bool(args.verbose))
     
     # Update global configuration with command line arguments
     POPULATION_SIZE = args.population_size
