@@ -27,6 +27,7 @@ import shutil
 import random
 from pathlib import Path
 import sys
+import re
 
 # Allow importing the package when running this script directly
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -203,6 +204,69 @@ def compute_mape(true, pred):
     errors = np.abs(true[:min_len] - pred[:min_len]) / (np.max(np.abs(true[:min_len])) + 1e-8)
     return np.mean(errors) * 100
 
+
+def compute_mae(true, pred) -> float:
+    """Compute MAE between two arrays (aligned to min length)."""
+    true = np.asarray(true).flatten()
+    pred = np.asarray(pred).flatten()
+    min_len = min(len(true), len(pred))
+    if min_len == 0:
+        raise ValueError("Empty arrays for MAE computation.")
+    return float(np.mean(np.abs(true[:min_len] - pred[:min_len])))
+
+
+def is_phase_sincos_mode(data_type: str) -> bool:
+    """Return True if data_type requests combined sin+cos phase mode."""
+    return isinstance(data_type, str) and re.fullmatch(r"(mp_?sc|phase_?sc)([1-4])", data_type) is not None
+
+
+def parse_phase_sincos_mode(data_type: str) -> int:
+    """Extract mode number (1-4) from combined sin+cos data_type."""
+    m = re.fullmatch(r"(mp_?sc|phase_?sc)([1-4])", str(data_type))
+    if not m:
+        raise ValueError(f"Invalid combined sin/cos data_type: {data_type!r} (expected mp_sc1..mp_sc4)")
+    return int(m.group(2))
+
+
+def result_paths(output_dir: str, notebook_type: str, state: int, selected_data_type: str):
+    """Return (true_path, pred_path) for a given run's saved arrays."""
+    base = f"results_{notebook_type}_state_{state}_{selected_data_type}"
+    return (
+        os.path.join(output_dir, f"{base}_true.npy"),
+        os.path.join(output_dir, f"{base}_pred.npy"),
+    )
+
+
+def compute_phase_mape_from_sincos(true_sin, true_cos, pred_sin, pred_cos) -> float:
+    """
+    Compute a single phase error metric from (sin, cos) pairs.
+
+    Reconstruct phase via atan2(sin, cos), wrap the difference into [-pi, pi],
+    and report a percent-of-full-scale error: mean(|Δφ|)/pi * 100.
+    """
+    ts = np.asarray(true_sin).flatten()
+    tc = np.asarray(true_cos).flatten()
+    ps = np.asarray(pred_sin).flatten()
+    pc = np.asarray(pred_cos).flatten()
+    min_len = min(len(ts), len(tc), len(ps), len(pc))
+    if min_len == 0:
+        raise ValueError("Empty arrays for sin/cos phase MAPE computation.")
+    ts, tc, ps, pc = ts[:min_len], tc[:min_len], ps[:min_len], pc[:min_len]
+
+    # Normalize pairs to unit magnitude to make atan2 robust to scaling drift.
+    true_norm = np.sqrt(ts * ts + tc * tc)
+    pred_norm = np.sqrt(ps * ps + pc * pc)
+    true_norm = np.where(true_norm < 1e-8, 1.0, true_norm)
+    pred_norm = np.where(pred_norm < 1e-8, 1.0, pred_norm)
+    ts, tc = ts / true_norm, tc / true_norm
+    ps, pc = ps / pred_norm, pc / pred_norm
+
+    true_phi = np.arctan2(ts, tc)
+    pred_phi = np.arctan2(ps, pc)
+    delta = pred_phi - true_phi
+    delta = (delta + np.pi) % (2 * np.pi) - np.pi
+    return float(np.mean(np.abs(delta)) / (np.pi + 1e-8) * 100.0)
+
 def print_summary(individual, mape, elapsed):
     print(f"SUCCESS {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} | "
           f"MAPE: {mape:.2f}% | {elapsed:.1f}s")
@@ -217,32 +281,47 @@ def evaluate_individual(individual, run_dir, existing_ids, data_type='ma2'):
     with open(params_path, 'w') as f:
         json.dump(params, f, indent=4)
     try:
-        run_analysis_for_individual(individual, data_type=data_type, output_dir=individual_dir)
-        npy_files = {f: os.path.join(individual_dir, f) for f in os.listdir(individual_dir) if f.endswith('.npy')}
-        true_file = None
-        pred_file = None
-        for name, path in npy_files.items():
-            if 'true' in name.lower():
-                true_file = path
-            elif 'pred' in name.lower():
-                pred_file = path
-        if true_file is None or pred_file is None:
-            print(f"ERROR {individual['id'][:8]}... | Missing output files: true={true_file is not None}, pred={pred_file is not None}")
-            return None, None
-        base_name = os.path.basename(true_file).replace('_true.npy', '')
-        parts = base_name.split('_')
-        notebook_type = parts[1]
-        state_idx = parts.index('state') + 1
-        state = int(parts[state_idx]) if state_idx < len(parts) else None
-        if state is None or state != individual['state']:
-            print(f"Mismatched state in {individual_dir}: expected {individual['state']}, found {state}, file={true_file}")
-            return None, None
-        true_data, pred_data = load_result_arrays(true_file, pred_file)
-        if not validate_result_data(true_data, pred_data, individual['id']):
-            return None, None
-        mape = compute_mape(true_data, pred_data)
+        if is_phase_sincos_mode(data_type):
+            mode_num = parse_phase_sincos_mode(data_type)
+            sin_type = f"mps{mode_num}"
+            cos_type = f"mpc{mode_num}"
+
+            sin_dir = os.path.join(individual_dir, sin_type)
+            cos_dir = os.path.join(individual_dir, cos_type)
+            os.makedirs(sin_dir, exist_ok=True)
+            os.makedirs(cos_dir, exist_ok=True)
+
+            run_analysis_for_individual(individual, data_type=sin_type, output_dir=sin_dir)
+            run_analysis_for_individual(individual, data_type=cos_type, output_dir=cos_dir)
+
+            true_sin_path, pred_sin_path = result_paths(
+                sin_dir, individual["notebook_type"], individual["state"], sin_type
+            )
+            true_cos_path, pred_cos_path = result_paths(
+                cos_dir, individual["notebook_type"], individual["state"], cos_type
+            )
+
+            true_sin, pred_sin = load_result_arrays(true_sin_path, pred_sin_path)
+            true_cos, pred_cos = load_result_arrays(true_cos_path, pred_cos_path)
+            if not validate_result_data(true_sin, pred_sin, individual["id"]) or not validate_result_data(true_cos, pred_cos, individual["id"]):
+                return None, None
+
+            sin_mae = compute_mae(true_sin, pred_sin)
+            cos_mae = compute_mae(true_cos, pred_cos)
+            mape = compute_phase_mape_from_sincos(true_sin, true_cos, pred_sin, pred_cos)
+        else:
+            run_analysis_for_individual(individual, data_type=data_type, output_dir=individual_dir)
+            true_file, pred_file = result_paths(
+                individual_dir, individual["notebook_type"], individual["state"], data_type
+            )
+            true_data, pred_data = load_result_arrays(true_file, pred_file)
+            if not validate_result_data(true_data, pred_data, individual['id']):
+                return None, None
+            sin_mae = None
+            cos_mae = None
+            mape = compute_mape(true_data, pred_data)
         print_summary(individual, mape, time.time() - start)
-        return None, mape
+        return None, (mape, sin_mae, cos_mae)
     except Exception as e:
         print(f"Exception for {individual['id']}: {e}")
         return None, None
@@ -313,6 +392,10 @@ def load_previous_population(run_dir):
         print(f"No previous results found at {pretty_path(csv_path)}. Starting fresh.")
         return None, 0, None, float('inf'), None
     df = pd.read_csv(csv_path)
+    # Backward compatibility: older CSVs may not contain component columns.
+    for col in ("sin_mae", "cos_mae"):
+        if col not in df.columns:
+            df[col] = np.nan
     if df.empty:
         print("Previous CSV is empty. Starting fresh.")
         return None, 0, None, float('inf'), None
@@ -433,9 +516,12 @@ def genetic_algorithm(run_dir=None, data_type='ma2'):
                                            'epochs', 'validation_split', 'activation_func', 'loss_func',
                                            'optimizer_func', 'outlier_cutoff', 'num_conv2d_layers',
                                            'num_dense_layers', 'conv2d_neurons', 'conv2d_size',
-                                           'dense_layer_neurons', 'max_pooling_size', 'mape'], dtype=object)
+                                           'dense_layer_neurons', 'max_pooling_size', 'mape', 'sin_mae', 'cos_mae'], dtype=object)
     else:
         results_df = pd.read_csv(os.path.join(run_dir, CSV_FILENAME))
+        for col in ("sin_mae", "cos_mae"):
+            if col not in results_df.columns:
+                results_df[col] = np.nan
         print(f"Resuming from generation {start_gen} with {len(population)} individuals")
     mape_history = []
     if start_gen > 0:
@@ -449,12 +535,13 @@ def genetic_algorithm(run_dir=None, data_type='ma2'):
         for i, individual in enumerate(population, 1):
             print(f"  [{i:2d}/{POPULATION_SIZE}] {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} ({individual['epochs']}ep) | ", end="", flush=True)
             try:
-                _, mape = evaluate_individual(individual, run_dir, existing_ids, data_type)
+                _, out = evaluate_individual(individual, run_dir, existing_ids, data_type)
             except Exception as e:
                 print(f"ERROR: {e}")
                 continue
-            if mape is None:
+            if out is None:
                 continue
+            mape, sin_mae, cos_mae = out
             fitness.append({'individual': individual, 'mape': mape})
             existing_ids.add(individual['id'])
             new_row = pd.DataFrame([{
@@ -475,7 +562,9 @@ def genetic_algorithm(run_dir=None, data_type='ma2'):
                 'conv2d_size': individual['conv2d_size'],
                 'dense_layer_neurons': individual['dense_layer_neurons'],
                 'max_pooling_size': individual['max_pooling_size'],
-                'mape': mape
+                'mape': mape,
+                'sin_mae': sin_mae,
+                'cos_mae': cos_mae,
             }])
             if results_df.empty:
                 results_df = new_row
@@ -553,6 +642,7 @@ def main():
     parser.add_argument('--data_type', type=str, default='ma2',
                        help='Data type: ma1-ma4 (mode amplitude 1-4), mp1-mp4 (mode phase 1-4), '
                             'mps1-mps4 (sin(phase) for modes 1-4), mpc1-mpc4 (cos(phase) for modes 1-4) '
+                            'mp_sc1-mp_sc4 (combined sin+cos -> phase MAPE fitness) '
                             '(default: ma2)')
     parser.add_argument('--state', type=int, default=2, 
                        help='State number (1, 2, or 3) (default: 2)')

@@ -33,6 +33,7 @@ from tqdm import tqdm
 import psutil
 import sys
 import contextlib
+import re
 
 # Allow importing the package when running this script directly
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -304,6 +305,70 @@ def compute_mape(true, pred):
     errors = np.abs(true[:min_len] - pred[:min_len]) / (np.max(np.abs(true[:min_len])) + 1e-8)
     return np.mean(errors) * 100
 
+
+def compute_mae(true, pred) -> float:
+    """Compute MAE between two arrays (aligned to min length)."""
+    true = np.asarray(true).flatten()
+    pred = np.asarray(pred).flatten()
+    min_len = min(len(true), len(pred))
+    if min_len == 0:
+        raise ValueError("Empty arrays for MAE computation.")
+    return float(np.mean(np.abs(true[:min_len] - pred[:min_len])))
+
+
+def is_phase_sincos_mode(data_type: str) -> bool:
+    """Return True if data_type requests combined sin+cos phase mode."""
+    return isinstance(data_type, str) and re.fullmatch(r"(mp_?sc|phase_?sc)([1-4])", data_type) is not None
+
+
+def parse_phase_sincos_mode(data_type: str) -> int:
+    """Extract mode number (1-4) from combined sin+cos data_type."""
+    m = re.fullmatch(r"(mp_?sc|phase_?sc)([1-4])", str(data_type))
+    if not m:
+        raise ValueError(f"Invalid combined sin/cos data_type: {data_type!r} (expected mp_sc1..mp_sc4)")
+    return int(m.group(2))
+
+
+def result_paths(output_dir: str, notebook_type: str, state: int, selected_data_type: str) -> Tuple[str, str]:
+    """Return (true_path, pred_path) for a given run's saved arrays."""
+    base = f"results_{notebook_type}_state_{state}_{selected_data_type}"
+    return (
+        os.path.join(output_dir, f"{base}_true.npy"),
+        os.path.join(output_dir, f"{base}_pred.npy"),
+    )
+
+
+def compute_phase_mape_from_sincos(true_sin, true_cos, pred_sin, pred_cos) -> float:
+    """
+    Compute a single phase error metric from (sin, cos) pairs.
+
+    We reconstruct phase via atan2(sin, cos), wrap the difference into [-pi, pi],
+    and report a percent-of-full-scale error: mean(|Δφ|)/pi * 100.
+    """
+    ts = np.asarray(true_sin).flatten()
+    tc = np.asarray(true_cos).flatten()
+    ps = np.asarray(pred_sin).flatten()
+    pc = np.asarray(pred_cos).flatten()
+    min_len = min(len(ts), len(tc), len(ps), len(pc))
+    if min_len == 0:
+        raise ValueError("Empty arrays for sin/cos phase MAPE computation.")
+    ts, tc, ps, pc = ts[:min_len], tc[:min_len], ps[:min_len], pc[:min_len]
+
+    # Normalize pairs to unit magnitude to make atan2 robust to scaling drift.
+    true_norm = np.sqrt(ts * ts + tc * tc)
+    pred_norm = np.sqrt(ps * ps + pc * pc)
+    true_norm = np.where(true_norm < 1e-8, 1.0, true_norm)
+    pred_norm = np.where(pred_norm < 1e-8, 1.0, pred_norm)
+    ts, tc = ts / true_norm, tc / true_norm
+    ps, pc = ps / pred_norm, pc / pred_norm
+
+    true_phi = np.arctan2(ts, tc)
+    pred_phi = np.arctan2(ps, pc)
+    delta = pred_phi - true_phi
+    # Wrap to [-pi, pi]
+    delta = (delta + np.pi) % (2 * np.pi) - np.pi
+    return float(np.mean(np.abs(delta)) / (np.pi + 1e-8) * 100.0)
+
 def evaluate_individual_worker(args):
     """Worker function for parallel evaluation of individuals"""
     individual, run_dir, existing_ids, data_type = args
@@ -326,37 +391,50 @@ def evaluate_individual_worker(args):
             # but still helps for some subcomponents).
             os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
-            run_analysis_for_individual(individual, data_type=data_type, output_dir=individual_dir)
-        
-            # Find result files
-            npy_files = {f: os.path.join(individual_dir, f) for f in os.listdir(individual_dir) if f.endswith('.npy')}
-            true_file = None
-            pred_file = None
-            for name, path in npy_files.items():
-                if 'true' in name.lower():
-                    true_file = path
-                elif 'pred' in name.lower():
-                    pred_file = path
-            
-            if true_file is None or pred_file is None:
-                raise RuntimeError(f"Missing output files: true={true_file is not None}, pred={pred_file is not None}")
-            
-            # Validate state consistency
-            base_name = os.path.basename(true_file).replace('_true.npy', '')
-            parts = base_name.split('_')
-            state_idx = parts.index('state') + 1
-            state = int(parts[state_idx]) if state_idx < len(parts) else None
-            
-            if state is None or state != individual['state']:
-                raise RuntimeError(f"Mismatched state in {individual_dir}: expected {individual['state']}, found {state}")
-            
-            true_data, pred_data = load_result_arrays(true_file, pred_file)
-            if not validate_result_data(true_data, pred_data, individual['id']):
-                raise RuntimeError("Invalid result data (NaN/Inf or missing).")
-            
-            mape = compute_mape(true_data, pred_data)
+            sin_mae = None
+            cos_mae = None
+
+            if is_phase_sincos_mode(data_type):
+                mode_num = parse_phase_sincos_mode(data_type)
+                sin_type = f"mps{mode_num}"
+                cos_type = f"mpc{mode_num}"
+
+                sin_dir = os.path.join(individual_dir, sin_type)
+                cos_dir = os.path.join(individual_dir, cos_type)
+                os.makedirs(sin_dir, exist_ok=True)
+                os.makedirs(cos_dir, exist_ok=True)
+
+                run_analysis_for_individual(individual, data_type=sin_type, output_dir=sin_dir)
+                run_analysis_for_individual(individual, data_type=cos_type, output_dir=cos_dir)
+
+                true_sin_path, pred_sin_path = result_paths(
+                    sin_dir, individual["notebook_type"], individual["state"], sin_type
+                )
+                true_cos_path, pred_cos_path = result_paths(
+                    cos_dir, individual["notebook_type"], individual["state"], cos_type
+                )
+
+                true_sin, pred_sin = load_result_arrays(true_sin_path, pred_sin_path)
+                true_cos, pred_cos = load_result_arrays(true_cos_path, pred_cos_path)
+                if not validate_result_data(true_sin, pred_sin, individual["id"]) or not validate_result_data(true_cos, pred_cos, individual["id"]):
+                    raise RuntimeError("Invalid sin/cos result data (NaN/Inf or missing).")
+
+                sin_mae = compute_mae(true_sin, pred_sin)
+                cos_mae = compute_mae(true_cos, pred_cos)
+                mape = compute_phase_mape_from_sincos(true_sin, true_cos, pred_sin, pred_cos)
+            else:
+                run_analysis_for_individual(individual, data_type=data_type, output_dir=individual_dir)
+
+                true_file, pred_file = result_paths(
+                    individual_dir, individual["notebook_type"], individual["state"], data_type
+                )
+                true_data, pred_data = load_result_arrays(true_file, pred_file)
+                if not validate_result_data(true_data, pred_data, individual['id']):
+                    raise RuntimeError("Invalid result data (NaN/Inf or missing).")
+
+                mape = compute_mape(true_data, pred_data)
             elapsed = time.time() - start
-            return individual, mape, elapsed, None, worker_log
+            return individual, mape, sin_mae, cos_mae, elapsed, None, worker_log
         
     except Exception as e:
         # Return error message to main process; details will be in worker.log if created.
@@ -368,7 +446,7 @@ def evaluate_individual_worker(args):
                 f.write(f"\n[worker exception] {repr(e)}\n")
         except Exception:
             worker_log = None
-        return individual, None, None, str(e), worker_log
+        return individual, None, None, None, None, str(e), worker_log
 
 def evaluate_population_parallel(population, run_dir, existing_ids, max_workers=None, data_type='ma2'):
     """Evaluate population in parallel with progress tracking"""
@@ -392,14 +470,14 @@ def evaluate_population_parallel(population, run_dir, existing_ids, max_workers=
         # Process completed jobs with progress bar
         with tqdm(total=len(population), desc="Evaluating individuals", unit="individual") as pbar:
             for future in as_completed(future_to_individual):
-                individual, mape, elapsed, err, worker_log = future.result()
+                individual, mape, sin_mae, cos_mae, elapsed, err, worker_log = future.result()
                 
                 # Always add the individual's ID to existing_ids, regardless of success/failure
                 # This prevents ID conflicts in future generations
                 existing_ids.add(individual['id'])
                 
                 if mape is not None:
-                    fitness.append({'individual': individual, 'mape': mape})
+                    fitness.append({'individual': individual, 'mape': mape, 'sin_mae': sin_mae, 'cos_mae': cos_mae})
                     successful_count += 1
                     pbar.write(
                         f"{time.strftime('%Y-%m-%d %H:%M:%S')} - INFO - "
@@ -648,9 +726,13 @@ def genetic_algorithm_parallel(run_dir=None, max_workers=None, data_type='ma2'):
                                            'optimizer_func', 'outlier_cutoff', 'num_conv2d_layers',
                                            'num_dense_layers', 'conv2d_neurons', 'conv2d_size',
                                            'dense_layer_neurons', 'max_pooling_size', 'early_stopping_patience',
-                                           'early_stopping_min_delta', 'mape'], dtype=object)
+                                           'early_stopping_min_delta', 'mape', 'sin_mae', 'cos_mae'], dtype=object)
     else:
         results_df = pd.read_csv(os.path.join(run_dir, CSV_FILENAME))
+        # Backward compatibility: older CSVs may not contain new component columns.
+        for col in ("sin_mae", "cos_mae"):
+            if col not in results_df.columns:
+                results_df[col] = np.nan
         logger.info(f"Resuming from generation {start_gen} with {len(population)} individuals")
     
     mape_history = []
@@ -682,6 +764,8 @@ def genetic_algorithm_parallel(run_dir=None, max_workers=None, data_type='ma2'):
         for f in fitness:
             individual = f['individual']
             mape = f['mape']
+            sin_mae = f.get('sin_mae')
+            cos_mae = f.get('cos_mae')
             new_row = pd.DataFrame([{
                 'generation': generation,
                 'individual_id': individual['id'],
@@ -702,7 +786,9 @@ def genetic_algorithm_parallel(run_dir=None, max_workers=None, data_type='ma2'):
                 'max_pooling_size': individual['max_pooling_size'],
                 'early_stopping_patience': individual['early_stopping_patience'],
                 'early_stopping_min_delta': individual['early_stopping_min_delta'],
-                'mape': mape
+                'mape': mape,
+                'sin_mae': sin_mae,
+                'cos_mae': cos_mae,
             }])
             if results_df.empty:
                 results_df = new_row
@@ -782,6 +868,7 @@ def main():
     parser.add_argument('--data_type', type=str, default='ma2',
                        help='Data type: ma1-ma4 (mode amplitude 1-4), mp1-mp4 (mode phase 1-4), '
                             'mps1-mps4 (sin(phase) for modes 1-4), mpc1-mpc4 (cos(phase) for modes 1-4) '
+                            'mp_sc1-mp_sc4 (combined sin+cos -> phase MAPE fitness) '
                             '(default: ma2)')
     parser.add_argument('--max_workers', type=int, help='Maximum number of parallel workers')
     parser.add_argument('--run_dir', help='Specific run directory to resume')

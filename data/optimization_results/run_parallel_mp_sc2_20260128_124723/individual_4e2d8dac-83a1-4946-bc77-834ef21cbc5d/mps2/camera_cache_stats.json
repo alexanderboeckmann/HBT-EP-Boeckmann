@@ -1,0 +1,18 @@
+{
+  "notebook_type": "trimmed",
+  "state": 1,
+  "selected_data_type": "mps2",
+  "camera_cache": {
+    "hits": 37,
+    "misses": 0,
+    "saves": 0,
+    "load_seconds": 0.029622912988997996,
+    "build_seconds": 0.0,
+    "cache_root": "/Users/aboeckmann/Documents/Columbia/PlasmaLab/HBT-EP-Boeckmann/data/cache/camera_center32_full"
+  },
+  "timing_seconds": {
+    "camera_processing_seconds": 0.11631650000344962,
+    "train_seconds": 32.36572287499439,
+    "overall_seconds": 32.9685785000911
+  }
+}
