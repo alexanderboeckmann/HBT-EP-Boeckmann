@@ -37,9 +37,24 @@ def create_parser():
                             '(default: ma2)')
     parser.add_argument('--state', type=int, default=2, 
                        help='State number (1, 2, or 3) (default: 2)')
+    parser.add_argument(
+        '--states',
+        type=str,
+        default='',
+        help="Comma-separated list of states to include (e.g. '1,2,3'). "
+             "If provided, overrides --state."
+    )
     # Epochs are treated as a maximum; training typically ends earlier via early stopping.
     parser.add_argument('--epochs', type=int, default=35,
                        help='Max epochs for each optimization run (default: 35; early stopping usually ends earlier)')
+    parser.add_argument(
+        '--notebook_types',
+        type=str,
+        choices=['trimmed', 'untrimmed', 'both'],
+        default=None,
+        help="Notebook types to search: trimmed, untrimmed, or both. "
+             "If omitted, defaults to untrimmed for mp_sc* and both otherwise."
+    )
     
     # Optimization method
     # Default to parallel since it's typically much faster; allow opting out with --no-parallel.
@@ -80,7 +95,7 @@ def main():
     
     print(f"Starting HBT parameter optimization...")
     print(f"Data type: {args.data_type}")
-    print(f"State: {args.state}")
+    print(f"States: {args.states if args.states else args.state}")
     print(f"Epochs: {args.epochs}")
     
     # Prepare arguments for the specific optimization script
@@ -93,6 +108,12 @@ def main():
         '--mutation_rate', str(args.mutation_rate),
         '--crossover_rate', str(args.crossover_rate),
     ]
+
+    if args.states:
+        optimization_args.extend(['--states', args.states])
+
+    if args.notebook_types:
+        optimization_args.extend(['--notebook_types', args.notebook_types])
     
     if args.output_dir:
         optimization_args.extend(['--output_dir', args.output_dir])

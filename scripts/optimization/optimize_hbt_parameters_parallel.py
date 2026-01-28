@@ -479,11 +479,14 @@ def evaluate_population_parallel(population, run_dir, existing_ids, max_workers=
                 if mape is not None:
                     fitness.append({'individual': individual, 'mape': mape, 'sin_mae': sin_mae, 'cos_mae': cos_mae})
                     successful_count += 1
+                    mae_part = ""
+                    if sin_mae is not None and cos_mae is not None:
+                        mae_part = f" | sinMAE: {sin_mae:.3f} | cosMAE: {cos_mae:.3f}"
                     pbar.write(
                         f"{time.strftime('%Y-%m-%d %H:%M:%S')} - INFO - "
                         f"DONE {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} | "
                         f"epochs: {individual['epochs']} | patience: {individual.get('early_stopping_patience')} | "
-                        f"MAPE: {mape:.2f}% | {elapsed:.1f}s"
+                        f"MAPE: {mape:.2f}%{mae_part} | {elapsed:.1f}s"
                     )
                     pbar.set_postfix({
                         'Success': successful_count, 
@@ -882,6 +885,21 @@ def main():
                        help='Crossover rate for genetic algorithm (default: 0.8)')
     parser.add_argument('--state', type=int, default=2,
                        help='State number (1, 2, or 3) (default: 2)')
+    parser.add_argument(
+        '--states',
+        type=str,
+        default='',
+        help="Comma-separated list of states to include (e.g. '1,2,3'). "
+             "If provided, overrides --state."
+    )
+    parser.add_argument(
+        '--notebook_types',
+        type=str,
+        choices=['trimmed', 'untrimmed', 'both'],
+        default=None,
+        help="Notebook types to search: trimmed, untrimmed, or both. "
+             "If omitted, defaults to untrimmed for mp_sc* and both otherwise."
+    )
     parser.add_argument('--epochs', type=int, default=50,
                        help='Number of epochs for each optimization run (default: 50)')
     parser.add_argument('--verbose', action='store_true',
@@ -897,9 +915,27 @@ def main():
     MUTATION_RATE = args.mutation_rate
     EPOCHS = args.epochs
 
-    # Honor the requested state: constrain the search space so individuals don't randomly pick other states.
-    PARAM_SPACE['state'] = [int(args.state)]
-    
+    # Configure which states to include in the GA search.
+    if args.states:
+        state_list = [int(s.strip()) for s in args.states.split(',') if s.strip()]
+    else:
+        state_list = [int(args.state)]
+    if not state_list or any(s not in (1, 2, 3) for s in state_list):
+        raise ValueError(f"Invalid --states={args.states!r}. Expected a comma-separated subset of 1,2,3.")
+    PARAM_SPACE['state'] = sorted(set(state_list))
+
+    # Configure which notebook types to include in the GA search.
+    if args.notebook_types is None:
+        # Default behavior: mp_sc* runs untrimmed-only for efficiency; others search both.
+        if is_phase_sincos_mode(args.data_type):
+            PARAM_SPACE['notebook_type'] = ['untrimmed']
+            logger.info(f"Restricting notebook_type to untrimmed for {args.data_type} (override with --notebook_types both)")
+        else:
+            PARAM_SPACE['notebook_type'] = ['trimmed', 'untrimmed']
+    else:
+        PARAM_SPACE['notebook_type'] = ['trimmed', 'untrimmed'] if args.notebook_types == 'both' else [args.notebook_types]
+        logger.info(f"Restricting notebook_type to {PARAM_SPACE['notebook_type']} via --notebook_types")
+
     # Update PARAM_SPACE to cap epochs at the specified value
     PARAM_SPACE['epochs'] = list(range(10, args.epochs + 1, 5))
     

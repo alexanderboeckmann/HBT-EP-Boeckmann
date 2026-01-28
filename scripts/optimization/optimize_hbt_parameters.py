@@ -267,9 +267,14 @@ def compute_phase_mape_from_sincos(true_sin, true_cos, pred_sin, pred_cos) -> fl
     delta = (delta + np.pi) % (2 * np.pi) - np.pi
     return float(np.mean(np.abs(delta)) / (np.pi + 1e-8) * 100.0)
 
-def print_summary(individual, mape, elapsed):
-    print(f"SUCCESS {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} | "
-          f"MAPE: {mape:.2f}% | {elapsed:.1f}s")
+def print_summary(individual, mape, elapsed, sin_mae=None, cos_mae=None):
+    mae_part = ""
+    if sin_mae is not None and cos_mae is not None:
+        mae_part = f" | sinMAE: {sin_mae:.3f} | cosMAE: {cos_mae:.3f}"
+    print(
+        f"SUCCESS {individual['id'][:8]}... | {individual['notebook_type']} state{individual['state']} | "
+        f"MAPE: {mape:.2f}%{mae_part} | {elapsed:.1f}s"
+    )
 
 def evaluate_individual(individual, run_dir, existing_ids, data_type='ma2'):
     start = time.time()
@@ -320,7 +325,7 @@ def evaluate_individual(individual, run_dir, existing_ids, data_type='ma2'):
             sin_mae = None
             cos_mae = None
             mape = compute_mape(true_data, pred_data)
-        print_summary(individual, mape, time.time() - start)
+        print_summary(individual, mape, time.time() - start, sin_mae=sin_mae, cos_mae=cos_mae)
         return None, (mape, sin_mae, cos_mae)
     except Exception as e:
         print(f"Exception for {individual['id']}: {e}")
@@ -646,8 +651,23 @@ def main():
                             '(default: ma2)')
     parser.add_argument('--state', type=int, default=2, 
                        help='State number (1, 2, or 3) (default: 2)')
+    parser.add_argument(
+        '--states',
+        type=str,
+        default='',
+        help="Comma-separated list of states to include (e.g. '1,2,3'). "
+             "If provided, overrides --state."
+    )
     parser.add_argument('--epochs', type=int, default=EPOCHS,
                        help=f'Max epochs for each optimization run (default: {EPOCHS}; early stopping usually ends earlier)')
+    parser.add_argument(
+        '--notebook_types',
+        type=str,
+        choices=['trimmed', 'untrimmed', 'both'],
+        default=None,
+        help="Notebook types to search: trimmed, untrimmed, or both. "
+             "If omitted, defaults to untrimmed for mp_sc* and both otherwise."
+    )
     parser.add_argument('--population_size', type=int, default=POPULATION_SIZE, 
                        help=f'Population size for genetic algorithm (default: {POPULATION_SIZE})')
     parser.add_argument('--generations', type=int, default=GENERATIONS, 
@@ -667,9 +687,27 @@ def main():
     MUTATION_RATE = args.mutation_rate
     EPOCHS = args.epochs
 
-    # Honor the requested state: constrain the search space so individuals don't randomly pick other states.
-    PARAM_SPACE['state'] = [int(args.state)]
-    
+    # Configure which states to include in the GA search.
+    if args.states:
+        state_list = [int(s.strip()) for s in args.states.split(',') if s.strip()]
+    else:
+        state_list = [int(args.state)]
+    if not state_list or any(s not in (1, 2, 3) for s in state_list):
+        raise ValueError(f"Invalid --states={args.states!r}. Expected a comma-separated subset of 1,2,3.")
+    PARAM_SPACE['state'] = sorted(set(state_list))
+
+    # Configure which notebook types to include in the GA search.
+    if args.notebook_types is None:
+        # Default behavior: mp_sc* runs untrimmed-only for efficiency; others search both.
+        if is_phase_sincos_mode(args.data_type):
+            PARAM_SPACE['notebook_type'] = ['untrimmed']
+            print(f"Restricting notebook_type to untrimmed for {args.data_type} (override with --notebook_types both)")
+        else:
+            PARAM_SPACE['notebook_type'] = ['trimmed', 'untrimmed']
+    else:
+        PARAM_SPACE['notebook_type'] = ['trimmed', 'untrimmed'] if args.notebook_types == 'both' else [args.notebook_types]
+        print(f"Restricting notebook_type to {PARAM_SPACE['notebook_type']} via --notebook_types")
+
     # Update PARAM_SPACE to cap epochs at the specified value
     PARAM_SPACE['epochs'] = list(range(10, args.epochs + 1, 5))
     
