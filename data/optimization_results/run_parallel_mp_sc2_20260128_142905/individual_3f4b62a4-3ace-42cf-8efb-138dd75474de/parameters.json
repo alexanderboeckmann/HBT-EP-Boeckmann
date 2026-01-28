@@ -1,0 +1,34 @@
+{
+    "individual_id": "3f4b62a4-3ace-42cf-8efb-138dd75474de",
+    "state": 2,
+    "selected_data_type": "mp_sc2",
+    "RESERVED_SHOT": 114458,
+    "EPOCH_NUM": 15,
+    "VALIDATION_SPLIT": 0.3,
+    "ACTIVATION_FUNC": "sigmoid",
+    "LOSS_FUNC": "mse",
+    "OPTIMIZER_FUNC": "adam",
+    "OUTLIER_CUTOFF": 84.0,
+    "NUM_CONV2D_LAYERS": 1,
+    "NUM_DENSE_LAYERS": 3,
+    "CONV2D_NEURONS": [
+        64
+    ],
+    "CONV2D_SIZE": [
+        [
+            8,
+            8
+        ]
+    ],
+    "DENSE_LAYER_NEURONS": [
+        64,
+        32,
+        16
+    ],
+    "MAX_POOLING_SIZE": [
+        2,
+        2
+    ],
+    "EARLY_STOPPING_PATIENCE": 10,
+    "EARLY_STOPPING_MIN_DELTA": 0.001
+}
